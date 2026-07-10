@@ -8,6 +8,7 @@
   "references": [
     { "path": "../provider-kit" },
     { "path": "../core" },
-    { "path": "../../providers/fake" }
+    { "path": "../../providers/fake" },
+    { "path": "../../providers/bahama-cloud" }
   ]
 }

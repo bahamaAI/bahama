@@ -1,5 +1,6 @@
 import type { CommandStatus, JsonObject, ProviderDriver, ResultEnvelope } from "@bahama-ai/provider-kit";
 import { Engine } from "@bahama-ai/core";
+import { bahamaCloudProvider } from "@bahama-ai/provider-bahama-cloud";
 import { fakeProvider } from "@bahama-ai/provider-fake";
 import { renderHuman } from "./render.js";
 
@@ -10,10 +11,11 @@ import { renderHuman } from "./render.js";
  */
 export function buildRegistry(): ReadonlyMap<string, ProviderDriver> {
   const registry = new Map<string, ProviderDriver>();
+  registry.set("bahama-cloud", bahamaCloudProvider);
+  // vercel and neon drivers register here as they land.
   if (process.env["BAHAMA_ENABLE_FAKE"] === "1") {
     registry.set("fake", fakeProvider);
   }
-  // bahama-cloud, vercel, and neon drivers register here as they land.
   return registry;
 }
 

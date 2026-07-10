@@ -1,3 +1,4 @@
+import { clearCloudToken, cloudLogin, freshCloudToken } from "../cloud-auth.js";
 import { UsageError, buildEngine, buildRegistry, emit, envelope, type EmitOptions } from "../runtime.js";
 
 /**
@@ -12,8 +13,14 @@ import { UsageError, buildEngine, buildRegistry, emit, envelope, type EmitOption
 export async function runAuth(
   action: "login" | "status" | "logout",
   providerId: string,
+  options: { noBrowser: boolean },
   emitOptions: EmitOptions,
 ): Promise<never> {
+  // Bahama Cloud has no external CLI: this binary IS the OAuth client.
+  if (providerId === "bahama-cloud") {
+    return runCloudAuth(action, options, emitOptions);
+  }
+
   const registry = buildRegistry();
   const driver = registry.get(providerId);
   if (!driver) {
@@ -65,6 +72,46 @@ export async function runAuth(
         ? `Already authenticated with ${providerId} as ${probe.auth.identity ?? "unknown"}.`
         : `Run this in your own terminal: ${hint}`,
       { provider: providerId, hint },
+    ),
+    emitOptions,
+  );
+}
+
+async function runCloudAuth(
+  action: "login" | "status" | "logout",
+  options: { noBrowser: boolean },
+  emitOptions: EmitOptions,
+): Promise<never> {
+  if (action === "login") {
+    const result = await cloudLogin({ noBrowser: options.noBrowser });
+    emit(
+      envelope("auth", result.ok ? "succeeded" : "auth_required", result.message, { provider: "bahama-cloud" }),
+      emitOptions,
+    );
+  }
+  if (action === "logout") {
+    const removed = await clearCloudToken();
+    emit(
+      envelope("auth", "succeeded", removed ? "Logged out of Bahama Cloud." : "No Bahama Cloud session to remove.", {
+        provider: "bahama-cloud",
+      }),
+      emitOptions,
+    );
+  }
+  const token = await freshCloudToken();
+  emit(
+    envelope(
+      "auth",
+      token ? "succeeded" : "auth_required",
+      token ? "Authenticated with Bahama Cloud." : "Not authenticated with Bahama Cloud.",
+      { provider: "bahama-cloud", state: token ? "authenticated" : "unauthenticated" },
+      token
+        ? {}
+        : {
+            requirements: [
+              { kind: "auth", providerId: "bahama-cloud", loginHint: "bahama auth login bahama-cloud", reason: "missing" },
+            ],
+          },
     ),
     emitOptions,
   );

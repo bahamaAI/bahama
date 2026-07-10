@@ -11,6 +11,8 @@ export interface ResourceIntent {
   /** Manifest key: `application`, or a key under `resources:` (e.g. `database`). */
   resourceKey: string;
   role: ProviderRole;
+  /** The manifest's `project.name` — the default name for provider resources. */
+  projectName?: string;
   framework?: string;
   engine?: string;
   /** Provider-specific config, already validated against `intentSchema`. */

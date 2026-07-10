@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@bahama-ai/core": "0.1.0-alpha.1",
+    "@bahama-ai/provider-bahama-cloud": "0.1.0-alpha.1",
     "@bahama-ai/provider-fake": "0.1.0-alpha.1",
     "@bahama-ai/provider-kit": "0.1.0-alpha.1",
     "commander": "^12.1.0",

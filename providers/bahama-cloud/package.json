@@ -1,0 +1,27 @@
+{
+  "name": "@bahama-ai/provider-bahama-cloud",
+  "version": "0.1.0-alpha.1",
+  "description": "Bahama Cloud provider driver. Managed zero-config hosting for static, Vite, and Hono apps with optional D1 storage, driven entirely over the hosted control plane's REST API with OAuth bearer tokens.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": ["dist", "README.md"],
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@bahama-ai/provider-kit": "0.1.0-alpha.1",
+    "fflate": "^0.8.2",
+    "zod": "^3.25.0"
+  }
+}

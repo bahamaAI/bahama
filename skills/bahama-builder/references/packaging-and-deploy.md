@@ -1,0 +1,82 @@
+# Packaging And Deploy
+
+Use this file before deploying or troubleshooting deployment failures.
+
+This guidance applies when `application.provider: bahama-cloud`. The CLI owns packaging, upload, and status polling — do not build archives, request upload URLs, or PUT files by hand.
+
+## Deploy Flow
+
+1. Confirm `bahama.yaml` names the intended project and framework.
+2. Confirm the project tree matches the framework contract in the selected reference file.
+3. First deploy or any infrastructure change: run `bahama plan --json`, present the consequential steps and accounts to the user, then `bahama apply <plan-id> --approved --json`.
+4. Subsequent code-only deploys: run `bahama deploy --json`. It packages the source, uploads it, deploys, and polls status; it auto-applies only when every step is routine, and stops with `approval_required` otherwise — go back to step 3 when it does.
+5. Check the result envelope. `succeeded` means postconditions were verified against live provider state. Use `bahama status --json` to re-check afterwards.
+
+## Source Hygiene
+
+The CLI packages from the project tree, so keep the tree clean. The archive should contain the project root contents, not a wrapper directory — work from the repo root.
+
+Never part of the deployable app:
+
+- `node_modules/`
+- `.git/`
+- `.env*`
+- `.bahama/`
+- `coverage/`
+- logs
+- `.DS_Store`
+- `__MACOSX/`
+- editor temp files
+- screenshots, recordings, exports, notes, or local experiments that are not part of the app
+- large unreferenced local assets
+
+Never include dev tokens or raw secrets in the project tree.
+
+## Framework-Specific Packaging
+
+`static-site`:
+
+- root `index.html` and referenced assets ship directly
+- no install or build step
+- no `server/index.*`
+
+`static-bundle`:
+
+- already-built deployable output ships directly
+- `index.html` must be at root, `dist/`, `build/`, or `public/`
+- no install or build step
+- no `server/index.*`
+
+`vite-spa`:
+
+- source and build config ship: `package.json`, one lockfile, root `index.html`, `src/`, and Vite config when used
+- local `dist/` is not deployed
+- Bahama builds to `dist/index.html`
+
+`vite-hono`:
+
+- Vite frontend source and `server/index.*` ship: `package.json`, one lockfile, root `index.html`, `src/`, and server modules
+- local `dist/` is not deployed
+- Bahama builds frontend assets and bundles Hono
+
+`hono-api`:
+
+- `package.json`, one lockfile, `server/index.*`, and server modules ship
+- no static frontend assets required
+- Bahama bundles Hono
+
+## Status And Troubleshooting
+
+`bahama deploy` polls until the deploy is terminal when possible. If polling misses the final update, do not assume the deploy failed; run `bahama status --json` again later.
+
+Common failure meanings:
+
+- `invalid_upload`: archive shape is wrong, missing required files, unsafe paths, or wrong framework
+- `unsupported_framework`: unsupported dependency or backend shape, such as `server/index.*` in a static deployment
+- `unsupported_package_manager`: missing supported lockfile
+- `dependency_install_failed`: package install failed in the sandbox
+- `build_failed`: Vite build or Hono bundle failed
+- `deploy_failed`: publish failed inside Bahama deployer
+- `smoke_test_failed`: deploy published but live route did not pass readiness checks
+
+When a deploy fails, inspect the failure details in the result envelope and fix the source contract first. Do not switch frameworks casually to bypass a contract error.

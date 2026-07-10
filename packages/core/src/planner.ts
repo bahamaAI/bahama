@@ -283,6 +283,7 @@ function collectIntents(
   const appError = push({
     resourceKey: "application",
     role: "application",
+    projectName: manifest.project.name,
     framework: manifest.application.framework,
     config: manifest.application.config ?? {},
   });
@@ -293,7 +294,12 @@ function collectIntents(
     const role = driver?.descriptor.roles.includes("database") && (resource.engine || driver.descriptor.engines)
       ? ("database" as const)
       : ("service" as const);
-    const intent: ResourceIntent = { resourceKey: key, role, config: resource.config ?? {} };
+    const intent: ResourceIntent = {
+      resourceKey: key,
+      role,
+      projectName: manifest.project.name,
+      config: resource.config ?? {},
+    };
     if (resource.engine !== undefined) intent.engine = resource.engine;
     const error = push(intent);
     if (error) return { kind: "error", message: error };

@@ -132,10 +132,10 @@ for (const action of ["login", "status", "logout"] as const) {
     .argument("<provider>", "provider id")
     .option("--no-browser", "never attempt a browser flow; print headless instructions")
     .option("--json", "emit a JSON result envelope")
-    .action(async (provider: string, options: { json?: boolean }) => {
+    .action(async (provider: string, options: { json?: boolean; browser?: boolean }) => {
       const emitOpts = emitOptions(options);
       try {
-        await runAuth(action, provider, emitOpts);
+        await runAuth(action, provider, { noBrowser: options.browser === false }, emitOpts);
       } catch (error) {
         fail("auth", emitOpts, error);
       }
