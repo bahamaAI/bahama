@@ -1,0 +1,29 @@
+{
+  "name": "bahama-monorepo",
+  "private": true,
+  "version": "0.1.0-alpha.1",
+  "description": "Bahama: open, agent-native application infrastructure. Declarative intent in, deterministic provider operations out.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "workspaces": [
+    "packages/*",
+    "providers/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc --build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.30.0",
+    "@types/node": "^20.19.0",
+    "eslint": "^9.30.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.35.0",
+    "vitest": "^3.2.0"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@bahama-ai/core",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "description": "Bahama's plan, execution, state, and secret engine. Internal to the CLI; the public surface is @bahama-ai/provider-kit.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@bahama-ai/provider-kit": "0.1.0-alpha.1",
+    "execa": "^9.6.0",
+    "semver": "^7.7.0",
+    "yaml": "^2.8.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/semver": "^7.7.0"
+  }
+}
