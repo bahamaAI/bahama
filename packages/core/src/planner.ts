@@ -10,7 +10,7 @@ import type {
   ResourceIntent,
 } from "@bahama-ai/provider-kit";
 import { addressString, classifyStep, type ClassificationContext } from "./classify.js";
-import { contentId, hashJson } from "./hash.js";
+import { contentId } from "./hash.js";
 import { providerConfigFingerprints } from "./inspect.js";
 import { lastSuccessfulDeploy, readJournal } from "./journal.js";
 import { loadLock, lockHash, type Lockfile } from "./lockfile.js";

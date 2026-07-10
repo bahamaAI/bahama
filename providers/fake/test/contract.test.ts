@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import { applyPlan, compilePlan, emptyLock, loadLock, saveLock, savePlan, validateManifest } from "@bahama-ai/core";
 import type { ProviderDriver } from "@bahama-ai/provider-kit";
 import {
-  REGISTRY,
   apply,
   engine,
   expectPlan,

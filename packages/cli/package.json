@@ -1,0 +1,33 @@
+{
+  "name": "@bahama-ai/cli",
+  "version": "0.1.0-alpha.1",
+  "description": "Bahama: the agent-native infrastructure CLI. Declarative intent in bahama.yaml, deterministic plans out, verified execution against your own provider accounts.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "bahama": "./dist/bin.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@bahama-ai/core": "0.1.0-alpha.1",
+    "@bahama-ai/provider-fake": "0.1.0-alpha.1",
+    "@bahama-ai/provider-kit": "0.1.0-alpha.1",
+    "commander": "^12.1.0",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
+    "execa": "^9.6.0"
+  }
+}
