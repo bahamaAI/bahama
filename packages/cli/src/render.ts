@@ -27,8 +27,13 @@ export function renderHuman(env: ResultEnvelope): string {
   if (accounts && typeof accounts === "object" && !Array.isArray(accounts) && Object.keys(accounts).length > 0) {
     lines.push("");
     lines.push("  Accounts:");
-    for (const [provider, identity] of Object.entries(accounts)) {
-      lines.push(`    ${provider}: ${String(identity)}`);
+    for (const [provider, value] of Object.entries(accounts)) {
+      const account = value as { id?: unknown; label?: unknown; kind?: unknown } | string;
+      const text =
+        typeof account === "object" && account !== null && typeof account.label === "string"
+          ? `${account.label}${typeof account.kind === "string" ? ` (${account.kind})` : ""} — ${String(account.id)}`
+          : String(value);
+      lines.push(`    ${provider}: ${text}`);
     }
   }
 

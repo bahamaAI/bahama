@@ -42,20 +42,22 @@ export class SafeRunner implements SubprocessRunner {
           reject: false,
           all: false,
         });
-        return {
-          exitCode: result.exitCode ?? 1,
-          stdout: this.deps.redactor.redact(result.stdout ?? ""),
-          stderr: this.deps.redactor.redact(result.stderr ?? ""),
-          timedOut: result.timedOut ?? false,
-        };
+        return this.capture(
+          result.exitCode ?? 1,
+          result.stdout ?? "",
+          result.stderr ?? "",
+          result.timedOut ?? false,
+          options,
+        );
       } catch (error) {
         if (error instanceof ExecaError) {
-          return {
-            exitCode: error.exitCode ?? 1,
-            stdout: this.deps.redactor.redact(String(error.stdout ?? "")),
-            stderr: this.deps.redactor.redact(String(error.stderr ?? error.message)),
-            timedOut: error.timedOut ?? false,
-          };
+          return this.capture(
+            error.exitCode ?? 1,
+            String(error.stdout ?? ""),
+            String(error.stderr ?? error.message),
+            error.timedOut ?? false,
+            options,
+          );
         }
         throw error;
       }
@@ -66,6 +68,32 @@ export class SafeRunner implements SubprocessRunner {
       return this.deps.broker.use(secretRef, async (raw) => execute(raw));
     }
     return execute();
+  }
+
+  /**
+   * Capture-time boundary: when the caller declared stdout secret, seal it
+   * (which registers it with the redactor) BEFORE either stream is redacted —
+   * so the returned stdout/stderr, and every later log or error message that
+   * passes through the redactor, can only ever contain the placeholder.
+   */
+  private capture(
+    exitCode: number,
+    rawStdout: string,
+    rawStderr: string,
+    timedOut: boolean,
+    options: RunOptions,
+  ): RunResult {
+    let secret: SecretRef | undefined;
+    if (options.captureSecretStdout && rawStdout.trim() !== "") {
+      secret = this.deps.broker.seal(options.captureSecretStdout.name, rawStdout.trim());
+    }
+    return {
+      exitCode,
+      stdout: this.deps.redactor.redact(rawStdout),
+      stderr: this.deps.redactor.redact(rawStderr),
+      timedOut,
+      ...(secret !== undefined ? { secret } : {}),
+    };
   }
 
   async which(command: string): Promise<string | null> {

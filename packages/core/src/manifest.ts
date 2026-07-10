@@ -32,34 +32,46 @@ const nameSchema = z
 
 const configSchema: z.ZodType<JsonObject> = z.record(z.string(), z.custom<JsonValue>());
 
-const applicationSchema = z.object({
-  provider: z.string().min(1),
-  framework: z.string().min(1),
-  config: configSchema.optional(),
-});
+// Structural levels are STRICT: the manifest is agent-authored intent, and a
+// typo'd key that silently validates as "not there" is exactly how an agent's
+// intended binding or resource quietly never happens. `config` blocks stay
+// open — providers validate those with their own intentSchema.
+const applicationSchema = z
+  .object({
+    provider: z.string().min(1),
+    framework: z.string().min(1),
+    config: configSchema.optional(),
+  })
+  .strict();
 
-const resourceSchema = z.object({
-  provider: z.string().min(1),
-  engine: z.string().optional(),
-  config: configSchema.optional(),
-});
+const resourceSchema = z
+  .object({
+    provider: z.string().min(1),
+    engine: z.string().optional(),
+    config: configSchema.optional(),
+  })
+  .strict();
 
-const bindingSchema = z.object({
-  from: z.string().regex(/^(application|resources\.[a-z0-9-]+)\.[a-zA-Z][a-zA-Z0-9]*$/, {
-    message: "expected `resources.<key>.<capability>` or `application.<capability>`",
-  }),
-  to: z.string().regex(/^(application|resources\.[a-z0-9-]+)\.[a-zA-Z][a-zA-Z0-9]*$/, {
-    message: "expected `resources.<key>.<capability>` or `application.<capability>`",
-  }),
-});
+const bindingSchema = z
+  .object({
+    from: z.string().regex(/^(application|resources\.[a-z0-9-]+)\.[a-zA-Z][a-zA-Z0-9]*$/, {
+      message: "expected `resources.<key>.<capability>` or `application.<capability>`",
+    }),
+    to: z.string().regex(/^(application|resources\.[a-z0-9-]+)\.[a-zA-Z][a-zA-Z0-9]*$/, {
+      message: "expected `resources.<key>.<capability>` or `application.<capability>`",
+    }),
+  })
+  .strict();
 
-export const manifestSchema = z.object({
-  version: z.literal(1),
-  project: z.object({ name: nameSchema }),
-  application: applicationSchema,
-  resources: z.record(z.string().regex(/^[a-z0-9-]+$/), resourceSchema).default({}),
-  bindings: z.record(z.string().regex(/^[A-Z][A-Z0-9_]*$/), bindingSchema).default({}),
-});
+export const manifestSchema = z
+  .object({
+    version: z.literal(1),
+    project: z.object({ name: nameSchema }).strict(),
+    application: applicationSchema,
+    resources: z.record(z.string().regex(/^[a-z0-9-]+$/), resourceSchema).default({}),
+    bindings: z.record(z.string().regex(/^[A-Z][A-Z0-9_]*$/), bindingSchema).default({}),
+  })
+  .strict();
 
 export type Manifest = z.infer<typeof manifestSchema>;
 
@@ -102,7 +114,8 @@ export function validateManifest(raw: unknown): Manifest {
   const parsed = manifestSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`);
-    throw new ManifestError(`bahama.yaml is invalid`, issues);
+    // The issues ride in the message too: agents see only the message text.
+    throw new ManifestError(`bahama.yaml is invalid — ${issues.join("; ")}`, issues);
   }
 
   const idHits: string[] = [];

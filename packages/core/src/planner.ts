@@ -10,7 +10,7 @@ import type {
   ResourceIntent,
 } from "@bahama-ai/provider-kit";
 import { addressString, classifyStep, type ClassificationContext } from "./classify.js";
-import { contentId } from "./hash.js";
+import { planContentId } from "./plan-store.js";
 import { providerConfigFingerprints } from "./inspect.js";
 import { lastSuccessfulDeploy, readJournal } from "./journal.js";
 import { loadLock, lockHash, type Lockfile } from "./lockfile.js";
@@ -23,8 +23,11 @@ export interface PlanDocument {
   createdAt: string;
   manifestHash: string;
   lockHash: string;
-  /** Display identities per provider, e.g. { vercel: "studio-team" }. */
-  accounts: Record<string, string>;
+  /**
+   * The account each provider's steps run under: durable id (recorded in the
+   * lock) plus display label, e.g. { vercel: { id: "team_abc", label: "studio" } }.
+   */
+  accounts: Record<string, { id: string; label: string; kind?: string }>;
   steps: PlannedStep[];
   warnings: string[];
 }
@@ -203,34 +206,35 @@ export async function compilePlan(deps: PlannerDeps): Promise<PlanOutcome> {
   const ordered = topoSort(steps);
   if (typeof ordered === "string") return blocked("failed", { message: ordered });
 
-  const accounts: Record<string, string> = {};
+  // Prefer the durable account id; a display identity alone is the fallback
+  // for providers that genuinely have no org/team concept.
+  const accounts: PlanDocument["accounts"] = {};
   for (const [providerId, probe] of probes) {
-    if (probe.auth.identity) accounts[providerId] = probe.auth.identity;
+    if (probe.auth.account) {
+      const { id, label, kind } = probe.auth.account;
+      accounts[providerId] = { id, label, ...(kind !== undefined ? { kind } : {}) };
+    } else if (probe.auth.identity) {
+      accounts[providerId] = { id: probe.auth.identity, label: probe.auth.identity };
+    }
   }
 
-  const planId = contentId("plan", {
+  // The id covers the FULL document (see planContentId): a plan whose
+  // effects, wiring, postconditions, or accounts differ is a different plan,
+  // and apply re-verifies this hash so the reviewed artifact is the executed one.
+  const planBody = {
     manifestHash: manifestHash(manifest),
     lockHash: lockHash(lock),
-    steps: ordered.map((step) => ({
-      id: step.id,
-      providerId: step.providerId,
-      action: step.action,
-      dependsOn: step.dependsOn,
-      inputs: step.inputs ?? {},
-      classification: step.classification,
-    })),
-  });
+    accounts,
+    steps: ordered,
+    warnings,
+  };
 
   return {
     kind: "plan",
     plan: {
-      planId,
+      planId: planContentId(planBody),
       createdAt: new Date().toISOString(),
-      manifestHash: manifestHash(manifest),
-      lockHash: lockHash(lock),
-      accounts,
-      steps: ordered,
-      warnings,
+      ...planBody,
     },
     manifest,
     lock,

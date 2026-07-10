@@ -16,11 +16,16 @@ This guidance applies when `application.provider: bahama-cloud`. The CLI owns pa
 
 The CLI packages from the project tree, so keep the tree clean. The archive should contain the project root contents, not a wrapper directory — work from the repo root.
 
+**Deploy only what the site needs to work.** For `static-site` and `static-bundle`, everything in the archive becomes a public URL — docs, notes, configs, and source files included by accident are published to the internet. Before deploying, look at what is in the tree and make sure only the files the running site actually needs will ship, plus anything unusual the app requires to work. When the deployable assets live next to other repo files, put them in a dedicated directory and set `application.config.dir` in `bahama.yaml` so only that directory is packaged.
+
+The CLI always refuses to package `bahama.yaml`, `bahama.lock`, `.bahama/`, `.env*`, `.npmrc`, `node_modules/`, and `.git/` — but that denylist is a backstop, not a substitute for keeping the archive minimal.
+
 Never part of the deployable app:
 
 - `node_modules/`
 - `.git/`
 - `.env*`
+- `.npmrc` or other credential-carrying dotfiles
 - `.bahama/`
 - `coverage/`
 - logs
@@ -36,7 +41,8 @@ Never include dev tokens or raw secrets in the project tree.
 
 `static-site`:
 
-- root `index.html` and referenced assets ship directly
+- root `index.html` and referenced assets ship directly, and every archived file is served publicly
+- keep assets in a dedicated directory and set `application.config.dir` to it whenever the repo contains anything else
 - no install or build step
 - no `server/index.*`
 

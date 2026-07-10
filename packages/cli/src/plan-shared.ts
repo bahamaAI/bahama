@@ -34,7 +34,7 @@ export async function compileAndDescribe(projectRoot: string, command: string): 
   const allRoutine = consequential.length === 0;
   const data: JsonObject = {
     planId: outcome.plan.planId,
-    accounts: outcome.plan.accounts,
+    accounts: outcome.plan.accounts as unknown as JsonObject,
     steps: outcome.plan.steps as unknown as JsonObject[],
     consequentialSteps: consequential.length,
   };

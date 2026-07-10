@@ -4,6 +4,7 @@ import { bahamaCloudProvider } from "@bahama-ai/provider-bahama-cloud";
 import { fakeProvider } from "@bahama-ai/provider-fake";
 import { neonProvider } from "@bahama-ai/provider-neon";
 import { vercelProvider } from "@bahama-ai/provider-vercel";
+import { freshCloudToken } from "./cloud-auth.js";
 import { renderHuman } from "./render.js";
 
 /**
@@ -23,7 +24,14 @@ export function buildRegistry(): ReadonlyMap<string, ProviderDriver> {
 }
 
 export function buildEngine(projectRoot: string): Engine {
-  return new Engine({ projectRoot, verbose: process.env["BAHAMA_VERBOSE"] === "1" });
+  return new Engine({
+    projectRoot,
+    verbose: process.env["BAHAMA_VERBOSE"] === "1",
+    // The Cloud driver asks this for a token per request; freshCloudToken
+    // refreshes (behind a file lock) when the stored one is stale, so a long
+    // apply never dies on an expired 15-minute access token.
+    tokenSuppliers: { "bahama-cloud": freshCloudToken },
+  });
 }
 
 /** Exit-code policy: expected workflow states are 0; only real failures are 1+. */

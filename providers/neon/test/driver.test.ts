@@ -14,6 +14,7 @@ import type {
   SecretRef,
 } from "@bahama-ai/provider-kit";
 import {
+  checksumOf,
   countApplied,
   findDestructiveStatement,
   neonProvider,
@@ -59,9 +60,21 @@ function makeCtx(
         calls.push({ cmd, args, ...(options !== undefined ? { options } : {}) });
         const canned = handler(cmd, args, options);
         if (!canned) throw new Error(`Unexpected command: ${cmd} ${args.join(" ")}`);
+        const rawStdout = canned.stdout ?? "";
+        // Mirror SafeRunner's captureSecretStdout contract: seal at capture,
+        // return only a redacted placeholder as stdout.
+        if (options?.captureSecretStdout && rawStdout.trim() !== "") {
+          return {
+            exitCode: canned.exitCode ?? 0,
+            stdout: `[redacted:${options.captureSecretStdout.name}]`,
+            stderr: canned.stderr ?? "",
+            timedOut: false,
+            secret: secrets.seal(options.captureSecretStdout.name, rawStdout.trim()),
+          };
+        }
         return {
           exitCode: canned.exitCode ?? 0,
-          stdout: canned.stdout ?? "",
+          stdout: rawStdout,
           stderr: canned.stderr ?? "",
           timedOut: false,
         };
@@ -198,6 +211,29 @@ describe("probe", () => {
     expect(result.observed["database"]).toEqual({ exists: true, projectId: "proj-123" });
   });
 
+  it("reports the durable user id (or selected org) as the active account", async () => {
+    const root = await scratchDir();
+    const handler: RunHandler = (cmd, args) => {
+      if (args.join(" ") === "--version") return { stdout: "2.15.0" };
+      if (args.join(" ") === "me --output json")
+        return { stdout: JSON.stringify({ id: "user-abc", email: "dev@example.com" }) };
+      if (args.join(" ") === "orgs list --output json")
+        return { stdout: JSON.stringify([{ id: "org-1", name: "Work" }]) };
+      if (args.join(" ").startsWith("projects list")) return { stdout: JSON.stringify({ projects: [] }) };
+      return undefined;
+    };
+    const personal = await makeCtx(root, handler).ctx;
+    const personalResult = await neonProvider.probe(personal, { intent: [DB_INTENT], locked: [] });
+    expect(personalResult.auth.account).toEqual({ id: "user-abc", label: "dev@example.com", kind: "personal" });
+
+    const org = await makeCtx(root, handler).ctx;
+    const orgResult = await neonProvider.probe(org, {
+      intent: [{ ...DB_INTENT, config: { org: "org-1" } }],
+      locked: [],
+    });
+    expect(orgResult.auth.account).toEqual({ id: "org-1", label: "Work", kind: "org" });
+  });
+
   it("observes a locked project via projects get", async () => {
     const root = await scratchDir();
     const { ctx, calls } = makeCtx(root, (cmd, args) => {
@@ -218,7 +254,7 @@ describe("probe", () => {
 });
 
 describe("plan", () => {
-  it("returns a decision with an orgId writeBack when multiple orgs and no config", async () => {
+  it("returns a decision with a config.org writeBack when multiple orgs and no config", async () => {
     const root = await scratchDir();
     const { ctx } = makeCtx(root, () => undefined);
     const contribution = await neonProvider.plan(
@@ -234,9 +270,10 @@ describe("plan", () => {
     );
     expect(contribution.steps).toEqual([]);
     expect(contribution.decisions).toHaveLength(1);
+    // `org`, not `orgId` — the writeBack target must pass manifest validation.
     expect(contribution.decisions![0]).toMatchObject({
       kind: "decision",
-      writeBack: "resources.database.config.orgId",
+      writeBack: "resources.database.config.org",
     });
     expect(contribution.decisions![0]!.options.map((o) => o.id)).toEqual(["org-1", "org-2"]);
   });
@@ -264,7 +301,7 @@ describe("plan", () => {
     const contribution = await neonProvider.plan(
       ctx,
       planRequest({
-        intent: [{ ...DB_INTENT, config: { region: "aws-us-east-1", orgId: "org-1" } }],
+        intent: [{ ...DB_INTENT, config: { region: "aws-us-east-1", org: "org-1" } }],
         probe: probed({ observed: { database: { exists: true, projectId: "proj-123" } } }),
         locked: [{ resourceKey: "database", identity: { projectId: "proj-123" } }],
       }),
@@ -279,7 +316,13 @@ describe("plan", () => {
       effects: { migratesSchema: true },
       dependsOn: ["database-ensure"],
       consumes: ["resources.database.connectionUrl"],
-      inputs: { files: ["0001_init.sql", "0002_more.sql"] },
+      // Approval covers the exact SQL content, not just the filenames.
+      inputs: {
+        files: [
+          { name: "0001_init.sql", checksum: checksumOf("create table a (id int);") },
+          { name: "0002_more.sql", checksum: checksumOf("create table b (id int);") },
+        ],
+      },
     });
   });
 
@@ -357,6 +400,9 @@ describe("execute neon.project.ensure", () => {
     });
     expect(calls.some((call) => call.args.join(" ").startsWith("projects create"))).toBe(false);
     expect(JSON.stringify(outcome)).not.toContain("sekret");
+    // The connection string is sealed INSIDE the runner, at capture.
+    const cs = calls.find((call) => call.args[0] === "connection-string")!;
+    expect(cs.options?.captureSecretStdout).toEqual({ name: "database.connectionUrl" });
   });
 
   it("fails with recovery guidance when the locked project no longer exists", async () => {
@@ -380,20 +426,23 @@ describe("execute neon.project.ensure", () => {
 });
 
 describe("migration executor", () => {
-  function recordingExec(alreadyApplied: string[] = []): {
+  function recordingExec(alreadyApplied: Array<{ name: string; checksum: string | null }> = []): {
     exec: QueryExecutor;
     statements: string[];
     inserted: string[];
   } {
     const statements: string[] = [];
-    const inserted: string[] = [...alreadyApplied];
+    const ledger = [...alreadyApplied];
+    const inserted: string[] = alreadyApplied.map((entry) => entry.name);
     const exec: QueryExecutor = async (sql, params) => {
       statements.push(sql);
-      if (/^select name from _bahama_migrations$/i.test(sql.trim())) {
-        return { rows: inserted.map((name) => ({ name })) };
+      if (/^select name, checksum from _bahama_migrations$/i.test(sql.trim())) {
+        return { rows: ledger.map((entry) => ({ name: entry.name, checksum: entry.checksum })) };
       }
       if (/^insert into _bahama_migrations/i.test(sql.trim())) {
-        inserted.push(String(params?.[0]));
+        const name = String(params?.[0]);
+        ledger.push({ name, checksum: String(params?.[1]) });
+        inserted.push(name);
         return { rows: [] };
       }
       if (/^select count\(\*\)::int as count/i.test(sql.trim())) {
@@ -406,7 +455,9 @@ describe("migration executor", () => {
   }
 
   it("applies unapplied migrations in filename order inside transactions", async () => {
-    const { exec, statements, inserted } = recordingExec(["0001_init.sql"]);
+    const { exec, statements, inserted } = recordingExec([
+      { name: "0001_init.sql", checksum: checksumOf("create table a (id int);") },
+    ]);
     const summary = await runMigrations(
       [
         { name: "0001_init.sql", sql: "create table a (id int);" },
@@ -431,13 +482,19 @@ describe("migration executor", () => {
     const exec: QueryExecutor = async (sql) => {
       statements.push(sql);
       if (sql.includes("boom")) throw new Error("syntax error at boom");
-      if (/^select name from/i.test(sql.trim())) return { rows: [] };
       return { rows: [] };
     };
     await expect(
       runMigrations([{ name: "0001_bad.sql", sql: "boom;" }], exec),
     ).rejects.toThrow(/0001_bad\.sql.*syntax error/);
     expect(statements).toContain("rollback");
+  });
+
+  it("fails loudly when an applied migration's content no longer matches its ledger checksum", async () => {
+    const { exec } = recordingExec([{ name: "0001_init.sql", checksum: checksumOf("create table a (id int);") }]);
+    await expect(
+      runMigrations([{ name: "0001_init.sql", sql: "create table a (id int, edited text);" }], exec),
+    ).rejects.toThrow(/edited after it was applied/);
   });
 
   it("rejects destructive SQL before touching the database", async () => {
@@ -456,14 +513,20 @@ describe("migration executor", () => {
 });
 
 describe("execute neon.migrations.apply", () => {
+  const plannedFiles = (files: Record<string, string>) =>
+    Object.entries(files)
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([name, sql]) => ({ name, checksum: checksumOf(sql) }));
+
   it("rejects destructive migrations before using the connection secret", async () => {
     const root = await scratchDir();
-    await withMigrations(root, { "0001_drop.sql": "DROP TABLE users;" });
+    const files = { "0001_drop.sql": "DROP TABLE users;" };
+    await withMigrations(root, files);
     const { ctx } = makeCtx(root, () => undefined);
     const ref = ctx.secrets.seal("database.connectionUrl", CONNECTION_URL);
     const outcome = await neonProvider.execute(
       ctx,
-      planned({ id: "database-migrate", action: "neon.migrations.apply", inputs: {} }),
+      planned({ id: "database-migrate", action: "neon.migrations.apply", inputs: { files: plannedFiles(files) } }),
       { consumed: { "resources.database.connectionUrl": ref } },
     );
     expect(outcome.status).toBe("failed");
@@ -474,15 +537,52 @@ describe("execute neon.migrations.apply", () => {
 
   it("fails cleanly when no sealed connection string was consumed", async () => {
     const root = await scratchDir();
-    await withMigrations(root, { "0001_init.sql": "create table a (id int);" });
+    const files = { "0001_init.sql": "create table a (id int);" };
+    await withMigrations(root, files);
     const { ctx } = makeCtx(root, () => undefined);
     const outcome = await neonProvider.execute(
       ctx,
-      planned({ id: "database-migrate", action: "neon.migrations.apply", inputs: {} }),
+      planned({ id: "database-migrate", action: "neon.migrations.apply", inputs: { files: plannedFiles(files) } }),
       { consumed: {} },
     );
     expect(outcome.status).toBe("failed");
     expect(outcome.error?.message).toContain("no sealed connection string");
+  });
+
+  it("rejects SQL that changed after the plan was compiled", async () => {
+    const root = await scratchDir();
+    await withMigrations(root, { "0001_init.sql": "create table a (id int, added_later text);" });
+    const { ctx } = makeCtx(root, () => undefined);
+    const ref = ctx.secrets.seal("database.connectionUrl", CONNECTION_URL);
+    const outcome = await neonProvider.execute(
+      ctx,
+      planned({
+        id: "database-migrate",
+        action: "neon.migrations.apply",
+        // The plan approved DIFFERENT content for this file.
+        inputs: { files: [{ name: "0001_init.sql", checksum: checksumOf("create table a (id int);") }] },
+      }),
+      { consumed: { "resources.database.connectionUrl": ref } },
+    );
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error?.message).toContain("changed after this plan was compiled");
+    expect(outcome.error?.message).toContain("0001_init.sql");
+    expect(outcome.error?.recovery).toContain("bahama plan");
+  });
+
+  it("rejects migrations that appeared after the plan was compiled", async () => {
+    const root = await scratchDir();
+    const approved = { "0001_init.sql": "create table a (id int);" };
+    await withMigrations(root, { ...approved, "0002_sneaky.sql": "create table b (id int);" });
+    const { ctx } = makeCtx(root, () => undefined);
+    const ref = ctx.secrets.seal("database.connectionUrl", CONNECTION_URL);
+    const outcome = await neonProvider.execute(
+      ctx,
+      planned({ id: "database-migrate", action: "neon.migrations.apply", inputs: { files: plannedFiles(approved) } }),
+      { consumed: { "resources.database.connectionUrl": ref } },
+    );
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error?.message).toContain("changed after this plan was compiled");
   });
 });
 

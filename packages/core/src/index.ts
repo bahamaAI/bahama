@@ -36,12 +36,13 @@ export {
   appendJournal,
   readJournal,
   verifiedSteps,
+  hasUnfinishedApply,
   lastSuccessfulDeploy,
   type JournalEntry,
 } from "./journal.js";
 export { classifyStep, addressString, type ClassificationContext, type Classified } from "./classify.js";
 export { compilePlan, type PlanDocument, type PlanOutcome, type PlannerDeps } from "./planner.js";
-export { savePlan, loadPlan } from "./plan-store.js";
+export { savePlan, loadPlan, planContentId, type LoadPlanResult } from "./plan-store.js";
 export { applyPlan, type ApplyDeps, type ApplyOutcome, type StepSummary } from "./executor.js";
 export { OperationLock } from "./oplock.js";
 export { Engine, type EngineOptions } from "./context.js";

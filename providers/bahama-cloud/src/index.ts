@@ -44,6 +44,12 @@ const intentSchema = z
   .object({
     /** Overrides the manifest's project.name as the Bahama Cloud slug. */
     name: z.string().regex(namePattern).optional(),
+    /**
+     * Directory (relative to the project root) to package and deploy instead
+     * of the whole project. Recommended for `static-site`, where the archive
+     * root is served publicly — point it at the folder holding index.html.
+     */
+    dir: z.string().min(1).optional(),
   })
   .passthrough()
   .transform((value) => value as JsonObject);
@@ -68,7 +74,7 @@ interface ProjectInfo {
 
 interface ProjectEnvelope {
   ok: boolean;
-  user?: { email?: string };
+  user?: { id?: string; email?: string };
   project?: ProjectInfo;
   projects?: ProjectInfo[];
   error?: string;
@@ -136,33 +142,60 @@ function readTokenFile(): string | null {
   }
 }
 
-/** Sealed at load so the redactor knows the token before any request or log. */
-function loadToken(ctx: ProviderContext): SecretRef | null {
+/**
+ * A token that is valid RIGHT NOW, sealed before any request or log can see
+ * it. Resolution order: BAHAMA_TOKEN (CI), then the CLI-injected credential
+ * source (which refreshes a stale stored token), then the raw credentials
+ * file as a last resort for embedders without a credential source.
+ */
+async function freshToken(ctx: ProviderContext): Promise<SecretRef | null> {
   const fromEnv = process.env["BAHAMA_TOKEN"];
-  const raw = fromEnv && fromEnv.trim() !== "" ? fromEnv.trim() : readTokenFile();
-  if (!raw) return null;
-  return ctx.secrets.seal("bahama-cloud.accessToken", raw);
+  if (fromEnv && fromEnv.trim() !== "") {
+    return ctx.secrets.seal("bahama-cloud.accessToken", fromEnv.trim());
+  }
+  if (ctx.credentials) return ctx.credentials.freshToken();
+  const raw = readTokenFile();
+  return raw ? ctx.secrets.seal("bahama-cloud.accessToken", raw) : null;
 }
 
+/** Synthetic 401 so "no token" and "rejected token" flow through one path. */
+const UNAUTHENTICATED: HttpResponse = {
+  status: 401,
+  headers: {},
+  body: "",
+  json: <T = unknown>() => ({}) as T,
+};
+
 /**
- * The bearer header is constructed inside secrets.use so the raw token never
- * sits in driver-owned state; ctx.http redacts sealed values from diagnostics.
+ * Authenticated control-plane request. The token is fetched fresh PER CALL
+ * (cheap when still valid) and a 401 gets one refresh-and-retry — deploy
+ * polls routinely outlive a 15-minute access token, and this is what keeps a
+ * long apply from dying mid-operation. The bearer header is constructed
+ * inside secrets.use so the raw token never sits in driver-owned state.
  */
 async function api(
   ctx: ProviderContext,
-  token: SecretRef,
   method: "GET" | "POST" | "PATCH",
   path: string,
   body?: JsonObject,
 ): Promise<HttpResponse> {
-  return ctx.secrets.use(token, async (raw) =>
-    ctx.http.request({
-      method,
-      url: `${baseUrl()}${path}`,
-      headers: { authorization: `Bearer ${raw}` },
-      ...(body !== undefined ? { body } : {}),
-    }),
-  );
+  const send = async (token: SecretRef): Promise<HttpResponse> =>
+    ctx.secrets.use(token, async (raw) =>
+      ctx.http.request({
+        method,
+        url: `${baseUrl()}${path}`,
+        headers: { authorization: `Bearer ${raw}` },
+        ...(body !== undefined ? { body } : {}),
+      }),
+    );
+
+  const token = await freshToken(ctx);
+  if (!token) return UNAUTHENTICATED;
+  const first = await send(token);
+  if (first.status !== 401) return first;
+  const refreshed = await freshToken(ctx);
+  if (!refreshed) return first;
+  return send(refreshed);
 }
 
 /* -------------------------------- helpers -------------------------------- */
@@ -259,31 +292,35 @@ function resolveSlug(
 
 type FetchedState =
   | { kind: "unauthorized" }
-  | { kind: "ok"; identity: string | null; project: ProjectInfo | null }
+  | { kind: "ok"; identity: string | null; userId: string | null; project: ProjectInfo | null }
   | { kind: "error"; message: string };
 
 async function fetchProjectState(
   ctx: ProviderContext,
-  token: SecretRef,
   slug: string | null,
 ): Promise<FetchedState> {
-  const list = await api(ctx, token, "GET", "/api/projects");
+  const list = await api(ctx, "GET", "/api/projects");
   if (list.status === 401) return { kind: "unauthorized" };
   if (list.status === 200) {
     const parsed = parseJson<ProjectEnvelope>(list);
     const project = parsed?.projects?.find((p) => p.slug === slug) ?? null;
-    return { kind: "ok", identity: parsed?.user?.email ?? null, project };
+    return { kind: "ok", identity: parsed?.user?.email ?? null, userId: parsed?.user?.id ?? null, project };
   }
   // The list endpoint may not exist on older control planes; fall back to
   // get-by-slug, which carries the same project shape.
   if (list.status === 404 || list.status === 405) {
-    if (!slug) return { kind: "ok", identity: null, project: null };
-    const single = await api(ctx, token, "GET", `/api/projects/${slug}`);
+    if (!slug) return { kind: "ok", identity: null, userId: null, project: null };
+    const single = await api(ctx, "GET", `/api/projects/${slug}`);
     if (single.status === 401) return { kind: "unauthorized" };
-    if (single.status === 404) return { kind: "ok", identity: null, project: null };
+    if (single.status === 404) return { kind: "ok", identity: null, userId: null, project: null };
     if (single.status === 200) {
       const parsed = parseJson<ProjectEnvelope>(single);
-      return { kind: "ok", identity: parsed?.user?.email ?? null, project: parsed?.project ?? null };
+      return {
+        kind: "ok",
+        identity: parsed?.user?.email ?? null,
+        userId: parsed?.user?.id ?? null,
+        project: parsed?.project ?? null,
+      };
     }
     return { kind: "error", message: apiError(`Looking up project ${slug}`, single) };
   }
@@ -325,12 +362,30 @@ function ensureSummary(kind: string, slug: string, exists: boolean, locked: bool
 /* -------------------------------- packaging ------------------------------ */
 
 const EXCLUDED_DIRS = new Set(["node_modules", ".git", ".bahama", "__MACOSX"]);
-const EXCLUDED_FILES = new Set([".fake-live.json", "bahama.lock", ".DS_Store"]);
+// Bahama state and credential-adjacent files never belong in an archive —
+// for static-site the archive root is SERVED, so anything included here
+// becomes a public URL.
+const EXCLUDED_FILES = new Set([
+  ".fake-live.json",
+  "bahama.yaml",
+  "bahama.lock",
+  ".DS_Store",
+  ".npmrc",
+  ".yarnrc",
+  ".netrc",
+]);
 
 function packageSource(
   projectRoot: string,
   framework: string | null,
+  sourceDir: string | null,
 ): { archive: Uint8Array; fileCount: number } {
+  // config.dir narrows the archive to one directory — the skill tells agents
+  // to deploy only what the site needs, and this is the lever for that.
+  if (sourceDir !== null && (sourceDir.startsWith("/") || sourceDir.split("/").includes(".."))) {
+    throw new Error(`config.dir must be a relative path inside the project (got \`${sourceDir}\`).`);
+  }
+  const root = sourceDir ? join(projectRoot, sourceDir) : projectRoot;
   const files: Record<string, Uint8Array> = {};
   // static-bundle ships prebuilt output; every other target is built from
   // source by the deployer, and a stale local dist/ breaks its validation.
@@ -349,7 +404,7 @@ function packageSource(
       }
     }
   };
-  walk(projectRoot, "");
+  walk(root, "");
   return { archive: zipSync(files), fileCount: Object.keys(files).length };
 }
 
@@ -357,18 +412,17 @@ function packageSource(
 
 async function ensureProject(
   ctx: ProviderContext,
-  token: SecretRef,
   slug: string,
   step: PlannedStep,
 ): Promise<StepOutcome> {
   const framework = typeof step.inputs?.["framework"] === "string" ? step.inputs["framework"] : null;
   const withDatabase = step.inputs?.["withDatabase"] === true;
 
-  const existing = await api(ctx, token, "GET", `/api/projects/${slug}`);
+  const existing = await api(ctx, "GET", `/api/projects/${slug}`);
   if (existing.status === 401) return authFail();
   const existed = existing.status === 200;
   if (existing.status === 404) {
-    const created = await api(ctx, token, "POST", "/api/projects", {
+    const created = await api(ctx, "POST", "/api/projects", {
       slug,
       ...(framework ? { app: { framework } } : {}),
       ...(withDatabase ? { resources: { d1: { enabled: true } } } : {}),
@@ -381,14 +435,14 @@ async function ensureProject(
     // later deploys build the target the manifest declares.
     const project = parseJson<ProjectEnvelope>(existing)?.project;
     if (project && project.app.framework !== framework) {
-      const patched = await api(ctx, token, "PATCH", `/api/projects/${slug}`, {
+      const patched = await api(ctx, "PATCH", `/api/projects/${slug}`, {
         app: { framework },
       });
       if (patched.status !== 200) return fail(apiError(`Updating framework for ${slug}`, patched));
     }
   }
 
-  const check = await api(ctx, token, "GET", `/api/projects/${slug}`);
+  const check = await api(ctx, "GET", `/api/projects/${slug}`);
   const verified = check.status === 200;
   return {
     status: verified ? "succeeded" : "failed",
@@ -401,14 +455,13 @@ async function ensureProject(
 
 async function ensureDatabase(
   ctx: ProviderContext,
-  token: SecretRef,
   slug: string,
 ): Promise<StepOutcome> {
-  const existing = await api(ctx, token, "GET", `/api/projects/${slug}`);
+  const existing = await api(ctx, "GET", `/api/projects/${slug}`);
   if (existing.status === 401) return authFail();
   if (existing.status === 404) {
     // A database-only intent still needs the owning project.
-    const created = await api(ctx, token, "POST", "/api/projects", {
+    const created = await api(ctx, "POST", "/api/projects", {
       slug,
       resources: { d1: { enabled: true } },
     });
@@ -418,7 +471,7 @@ async function ensureDatabase(
   } else {
     const project = parseJson<ProjectEnvelope>(existing)?.project;
     if (project && !project.resources.d1.enabled) {
-      const patched = await api(ctx, token, "PATCH", `/api/projects/${slug}`, {
+      const patched = await api(ctx, "PATCH", `/api/projects/${slug}`, {
         resources: { d1: { enabled: true } },
       });
       if (patched.status !== 200) {
@@ -427,16 +480,16 @@ async function ensureDatabase(
     }
   }
 
-  const before = await api(ctx, token, "GET", `/api/projects/${slug}/database`);
+  const before = await api(ctx, "GET", `/api/projects/${slug}/database`);
   const beforeDb = before.status === 200 ? parseJson<DatabaseEnvelope>(before)?.database : undefined;
   if (!(beforeDb?.exists && beforeDb.id)) {
-    const provisioned = await api(ctx, token, "POST", `/api/projects/${slug}/database/provision`);
+    const provisioned = await api(ctx, "POST", `/api/projects/${slug}/database/provision`);
     if (provisioned.status !== 200) {
       return fail(apiError(`Provisioning the database for ${slug}`, provisioned));
     }
   }
 
-  const check = await api(ctx, token, "GET", `/api/projects/${slug}/database`);
+  const check = await api(ctx, "GET", `/api/projects/${slug}/database`);
   const db = check.status === 200 ? parseJson<DatabaseEnvelope>(check)?.database : undefined;
   const verified = Boolean(db?.exists && db.id);
   const binding = db?.bindingName ?? "DB";
@@ -453,16 +506,16 @@ async function ensureDatabase(
 
 async function deployApplication(
   ctx: ProviderContext,
-  token: SecretRef,
   slug: string,
   step: PlannedStep,
 ): Promise<StepOutcome> {
   const framework = typeof step.inputs?.["framework"] === "string" ? step.inputs["framework"] : null;
+  const sourceDir = typeof step.inputs?.["dir"] === "string" ? step.inputs["dir"] : null;
 
   let archive: Uint8Array;
   let fileCount: number;
   try {
-    ({ archive, fileCount } = packageSource(ctx.projectRoot, framework));
+    ({ archive, fileCount } = packageSource(ctx.projectRoot, framework, sourceDir));
   } catch (error) {
     return fail(`Packaging the project source failed: ${(error as Error).message}`);
   }
@@ -476,7 +529,7 @@ async function deployApplication(
     );
   }
 
-  const target = await api(ctx, token, "POST", `/api/projects/${slug}/deploy/upload-url`);
+  const target = await api(ctx, "POST", `/api/projects/${slug}/deploy/upload-url`);
   if (target.status === 401) return authFail();
   if (target.status !== 200) return fail(apiError("Requesting a source upload URL", target));
   const upload = parseJson<UploadTargetEnvelope>(target);
@@ -502,7 +555,7 @@ async function deployApplication(
     return fail(`Uploading the source archive failed (HTTP ${putStatus}).`);
   }
 
-  const started = await api(ctx, token, "POST", `/api/projects/${slug}/deploy/start`, {
+  const started = await api(ctx, "POST", `/api/projects/${slug}/deploy/start`, {
     uploadId: upload.uploadId,
   });
   if (started.status !== 200) return fail(apiError("Starting the deploy", started));
@@ -525,7 +578,7 @@ async function deployApplication(
       );
     }
     await sleep(POLL_INTERVAL_MS, ctx.signal);
-    const polled = await api(ctx, token, "GET", `/api/projects/${slug}/deploy/status/${jobId}`);
+    const polled = await api(ctx, "GET", `/api/projects/${slug}/deploy/status/${jobId}`);
     if (polled.status === 200) {
       job = parseJson<DeployJob>(polled) ?? job;
     } else if (polled.status >= 400 && polled.status < 500) {
@@ -567,14 +620,13 @@ async function deployApplication(
 
 async function verifyApplication(
   ctx: ProviderContext,
-  token: SecretRef,
   slug: string,
   inputs: ExecutionInputs,
 ): Promise<StepOutcome> {
   const consumed = Object.values(inputs.consumed).find((value) => typeof value === "string");
   let url = typeof consumed === "string" ? consumed : null;
   if (!url) {
-    const res = await api(ctx, token, "GET", `/api/projects/${slug}`);
+    const res = await api(ctx, "GET", `/api/projects/${slug}`);
     if (res.status === 200) url = parseJson<ProjectEnvelope>(res)?.project?.deployment.url ?? null;
   }
   if (!url) {
@@ -621,8 +673,7 @@ export const bahamaCloudProvider = defineProvider({
   async probe(ctx: ProviderContext, req: ProbeRequest): Promise<ProbeResult> {
     // REST-only driver: there is no external CLI to install.
     const tool = { installed: true } as const;
-    const token = loadToken(ctx);
-    if (!token) {
+    if ((await freshToken(ctx)) === null) {
       return {
         tool,
         auth: { state: "unauthenticated", loginHint: LOGIN_HINT },
@@ -632,7 +683,7 @@ export const bahamaCloudProvider = defineProvider({
     }
 
     const slug = resolveSlug(ctx, req);
-    const fetched = await fetchProjectState(ctx, token, slug);
+    const fetched = await fetchProjectState(ctx, slug);
     if (fetched.kind === "unauthorized") {
       return {
         tool,
@@ -652,6 +703,8 @@ export const bahamaCloudProvider = defineProvider({
     }
 
     const identity = fetched.identity ?? "bahama-cloud user";
+    // The durable user id is what the lock records; email is just a label.
+    const accountId = fetched.userId ?? "personal";
     const observed: JsonObject = {};
     for (const intent of req.intent) {
       observed[intent.resourceKey] =
@@ -661,8 +714,12 @@ export const bahamaCloudProvider = defineProvider({
     }
     return {
       tool,
-      auth: { state: "authenticated", identity },
-      accounts: [{ id: "personal", label: identity, kind: "personal" }],
+      auth: {
+        state: "authenticated",
+        identity,
+        account: { id: accountId, label: identity, kind: "personal" },
+      },
+      accounts: [{ id: accountId, label: identity, kind: "personal" }],
       observed,
     };
   },
@@ -718,7 +775,11 @@ export const bahamaCloudProvider = defineProvider({
         resourceKey: appIntent.resourceKey,
         effects: { deploys: true },
         dependsOn: ["application-ensure", ...(dbIntent ? ["database-ensure"] : [])],
-        inputs: { slug, framework: appIntent.framework ?? null },
+        inputs: {
+          slug,
+          framework: appIntent.framework ?? null,
+          dir: typeof appIntent.config["dir"] === "string" ? appIntent.config["dir"] : null,
+        },
         produces: ["productionUrl"],
         postcondition: "The deploy job reports `deployed` and the production URL responds.",
       });
@@ -738,13 +799,6 @@ export const bahamaCloudProvider = defineProvider({
   },
 
   async execute(ctx: ProviderContext, step: PlannedStep, inputs: ExecutionInputs): Promise<StepOutcome> {
-    const token = loadToken(ctx);
-    if (!token) {
-      return fail(
-        "Not authenticated with Bahama Cloud.",
-        `Set BAHAMA_TOKEN or run \`${LOGIN_HINT}\`.`,
-      );
-    }
     const slug = step.inputs?.["slug"];
     if (typeof slug !== "string" || slug === "") {
       return fail(`Step ${step.id} is missing its project slug input.`);
@@ -752,20 +806,20 @@ export const bahamaCloudProvider = defineProvider({
 
     switch (step.action) {
       case "cloud.project.ensure":
-        return ensureProject(ctx, token, slug, step);
+        return ensureProject(ctx, slug, step);
       case "cloud.database.ensure":
-        return ensureDatabase(ctx, token, slug);
+        return ensureDatabase(ctx, slug);
       case "cloud.app.deploy":
-        return deployApplication(ctx, token, slug, step);
+        return deployApplication(ctx, slug, step);
       case "cloud.app.verify":
-        return verifyApplication(ctx, token, slug, inputs);
+        return verifyApplication(ctx, slug, inputs);
       default:
         return fail(`Unknown bahama-cloud action ${step.action}`);
     }
   },
 
   async status(ctx: ProviderContext, req: ProbeRequest): Promise<StatusReport> {
-    const token = loadToken(ctx);
+    const token = await freshToken(ctx);
     const fetched = new Map<string, { status: number; project: ProjectInfo | null }>();
     const resources: ResourceStatus[] = [];
 
@@ -786,7 +840,7 @@ export const bahamaCloudProvider = defineProvider({
       }
 
       if (!fetched.has(slug)) {
-        const res = await api(ctx, token, "GET", `/api/projects/${slug}`);
+        const res = await api(ctx, "GET", `/api/projects/${slug}`);
         fetched.set(slug, {
           status: res.status,
           project: res.status === 200 ? (parseJson<ProjectEnvelope>(res)?.project ?? null) : null,

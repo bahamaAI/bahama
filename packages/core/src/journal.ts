@@ -63,15 +63,40 @@ export async function readJournal(projectRoot: string): Promise<JournalEntry[]> 
   return entries;
 }
 
-/** Successful step receipts for one plan, newest wins per stepId. */
+/**
+ * Successful step receipts reusable for RESUMING one plan, newest wins per
+ * stepId. Receipts recorded at or before the plan's last successful
+ * completion are excluded: a finished apply is done, and re-applying the
+ * same plan must re-execute its steps (ensure semantics keep that
+ * idempotent) — otherwise a second `bahama deploy` of an unchanged plan
+ * would "skip-verified" every step and never actually redeploy.
+ */
 export function verifiedSteps(entries: JournalEntry[], planId: string): Map<string, JournalEntry & { type: "step" }> {
   const map = new Map<string, JournalEntry & { type: "step" }>();
   for (const entry of entries) {
-    if (entry.type === "step" && entry.planId === planId && entry.status === "succeeded" && !entry.rederived) {
+    if (entry.planId !== planId) continue;
+    if (entry.type === "apply-end" && entry.status === "succeeded") {
+      map.clear();
+    } else if (entry.type === "step" && entry.status === "succeeded" && !entry.rederived) {
       map.set(entry.stepId, entry);
     }
   }
   return map;
+}
+
+/**
+ * True when the plan's most recent apply never completed successfully —
+ * i.e. the next apply of this plan is a resume (after a crash or a failed
+ * step), not a fresh run.
+ */
+export function hasUnfinishedApply(entries: JournalEntry[], planId: string): boolean {
+  let unfinished = false;
+  for (const entry of entries) {
+    if (entry.planId !== planId) continue;
+    if (entry.type === "apply-start") unfinished = true;
+    else if (entry.type === "apply-end" && entry.status === "succeeded") unfinished = false;
+  }
+  return unfinished;
 }
 
 /**

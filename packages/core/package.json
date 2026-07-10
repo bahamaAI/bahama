@@ -1,10 +1,16 @@
 {
   "name": "@bahama-ai/core",
   "version": "0.1.0-alpha.1",
-  "private": true,
-  "description": "Bahama's plan, execution, state, and secret engine. Internal to the CLI; the public surface is @bahama-ai/provider-kit.",
+  "description": "Bahama's plan, execution, state, and secret engine. Published because the unbundled CLI depends on it at runtime; the supported public surface is @bahama-ai/provider-kit, and this package carries no compatibility guarantees of its own.",
   "license": "MIT",
   "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

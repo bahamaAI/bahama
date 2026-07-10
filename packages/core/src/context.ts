@@ -1,4 +1,4 @@
-import type { JsonObject, Logger, ProviderContext } from "@bahama-ai/provider-kit";
+import type { CredentialSource, JsonObject, Logger, ProviderContext } from "@bahama-ai/provider-kit";
 import { RedactingHttpClient } from "./http.js";
 import { Redactor } from "./redact.js";
 import { SafeRunner } from "./runner.js";
@@ -10,6 +10,13 @@ export interface EngineOptions {
   /** Where diagnostic lines go; defaults to stderr. Always redacted. */
   logSink?: (line: string) => void;
   verbose?: boolean;
+  /**
+   * Per-provider raw-token suppliers for CLI-managed auth (e.g. the Bahama
+   * Cloud OAuth store). Each call must return a token valid right now —
+   * refreshing if needed — or null when logged out. The engine seals the
+   * value before any driver sees it.
+   */
+  tokenSuppliers?: Record<string, () => Promise<string | null>>;
 }
 
 /**
@@ -29,6 +36,15 @@ export class Engine {
   }
 
   contextFor(providerId: string): ProviderContext {
+    const supplier = this.options.tokenSuppliers?.[providerId];
+    const credentials: CredentialSource | undefined = supplier
+      ? {
+          freshToken: async () => {
+            const raw = await supplier();
+            return raw === null ? null : this.broker.seal(`${providerId}.accessToken`, raw);
+          },
+        }
+      : undefined;
     return {
       projectRoot: this.options.projectRoot,
       run: new SafeRunner({
@@ -39,6 +55,7 @@ export class Engine {
       }),
       http: new RedactingHttpClient({ redactor: this.redactor, signal: this.signal }),
       secrets: this.broker,
+      ...(credentials !== undefined ? { credentials } : {}),
       log: this.loggerFor(providerId),
       signal: this.signal,
       interactive: false,

@@ -25,8 +25,13 @@ import {
 /**
  * Vercel driver: wraps the official `vercel` CLI. Mutations go through the
  * CLI's own commands (`project add`, `env add`, `deploy`); structured reads go
- * through `vercel curl`, the CLI's authenticated REST proxy, so this driver
- * never handles a Vercel token itself.
+ * through `vercel api`, the CLI's authenticated Vercel REST API command, so
+ * this driver never handles a Vercel token itself. (`vercel curl` is NOT that
+ * — it sends requests to your deployments, not to the Vercel API.)
+ *
+ * Project-scoped mutations always carry VERCEL_PROJECT_ID/VERCEL_ORG_ID
+ * resolved from the planned project — never from `.vercel/project.json` — so
+ * the lock, not a stray link file, decides which project gets deployed.
  */
 
 const PROVIDER_ID = "vercel";
@@ -156,16 +161,16 @@ export function parseDeploymentUrl(stdout: string, stderr: string): string | nul
   return null;
 }
 
-/* -------------------------------- vercel curl ----------------------------- */
+/* -------------------------------- vercel api ------------------------------ */
 
-type CurlResult =
+type ApiResult =
   | { kind: "ok"; json: JsonObject }
   | { kind: "not-found" }
   | { kind: "error"; message: string };
 
-/** Reads via `vercel curl <path>`: the CLI authenticates and prints JSON on stdout. */
-async function vcurl(ctx: ProviderContext, path: string, scope: string | null): Promise<CurlResult> {
-  const res = await ctx.run.run(BIN, ["curl", path, ...scopeArgs(scope)]);
+/** Reads via `vercel api <endpoint>`: the CLI authenticates against the Vercel REST API and prints JSON. */
+async function vapi(ctx: ProviderContext, path: string, scope: string | null): Promise<ApiResult> {
+  const res = await ctx.run.run(BIN, ["api", path, ...scopeArgs(scope)]);
   const parsed = parseJson(res.stdout);
   if (parsed && typeof parsed === "object") {
     const body = parsed as JsonObject;
@@ -178,14 +183,29 @@ async function vcurl(ctx: ProviderContext, path: string, scope: string | null): 
     return { kind: "ok", json: body };
   }
   if (res.exitCode !== 0) {
-    return { kind: "error", message: `vercel curl ${path} failed: ${errText(res.stderr, res.stdout)}` };
+    return { kind: "error", message: `vercel api ${path} failed: ${errText(res.stderr, res.stdout)}` };
   }
-  return { kind: "error", message: `vercel curl ${path} returned no parsable JSON.` };
+  return { kind: "error", message: `vercel api ${path} returned no parsable JSON.` };
 }
 
 interface VercelProject {
   id: string;
   name: string;
+  /** Owning account/team id — becomes VERCEL_ORG_ID for mutations. */
+  accountId: string | null;
+}
+
+/**
+ * Environment that pins every project-scoped `vercel` invocation to the
+ * PLANNED project. The vercel CLI otherwise falls back to
+ * `.vercel/project.json`, which would let a stale link file silently target a
+ * different project than the plan the user approved.
+ */
+function projectEnv(project: VercelProject): Record<string, string> {
+  return {
+    VERCEL_PROJECT_ID: project.id,
+    ...(project.accountId !== null ? { VERCEL_ORG_ID: project.accountId } : {}),
+  };
 }
 
 async function lookupProject(
@@ -193,14 +213,22 @@ async function lookupProject(
   nameOrId: string,
   scope: string | null,
 ): Promise<{ kind: "found"; project: VercelProject } | { kind: "absent" } | { kind: "error"; message: string }> {
-  const res = await vcurl(ctx, `/v9/projects/${encodeURIComponent(nameOrId)}`, scope);
+  const res = await vapi(ctx, `/v9/projects/${encodeURIComponent(nameOrId)}`, scope);
   if (res.kind === "not-found") return { kind: "absent" };
   if (res.kind === "error") return res;
   const id = res.json["id"];
   if (typeof id !== "string" || id === "") {
     return { kind: "error", message: "Vercel project lookup returned no id." };
   }
-  return { kind: "found", project: { id, name: String(res.json["name"] ?? nameOrId) } };
+  const accountId = res.json["accountId"];
+  return {
+    kind: "found",
+    project: {
+      id,
+      name: String(res.json["name"] ?? nameOrId),
+      accountId: typeof accountId === "string" && accountId !== "" ? accountId : null,
+    },
+  };
 }
 
 /** Production URL from a project body: prefer the production target's alias. */
@@ -323,10 +351,17 @@ async function setEnv(
     ? consumed
     : ctx.secrets.seal(`env.${bindingName}`, String(consumed));
 
+  // Resolve the PLANNED project up front: env add is project-scoped and must
+  // be pinned via VERCEL_PROJECT_ID, not left to `.vercel/project.json`.
+  const target = await lookupProject(ctx, inputString(step, "projectId") ?? name, scope);
+  if (target.kind !== "found") {
+    return fail(target.kind === "error" ? target.message : `Vercel project \`${name}\` was not found.`);
+  }
+
   const added = await ctx.run.run(
     BIN,
     ["env", "add", bindingName, "production", "--yes", "--force", ...scopeArgs(scope)],
-    { cwd: ctx.projectRoot, secretStdin: ref },
+    { cwd: ctx.projectRoot, env: projectEnv(target.project), secretStdin: ref },
   );
   if (added.exitCode !== 0) {
     return fail(
@@ -337,11 +372,7 @@ async function setEnv(
 
   // Postcondition: env values are write-only, so the NAME's presence for the
   // production target is what gets verified.
-  const project = await lookupProject(ctx, name, scope);
-  if (project.kind !== "found") {
-    return fail(project.kind === "error" ? project.message : `Vercel project \`${name}\` was not found.`);
-  }
-  const envRes = await vcurl(ctx, `/v9/projects/${project.project.id}/env`, scope);
+  const envRes = await vapi(ctx, `/v9/projects/${target.project.id}/env`, scope);
   if (envRes.kind !== "ok") {
     return fail(envRes.kind === "error" ? envRes.message : "Listing project env vars failed.");
   }
@@ -369,9 +400,21 @@ async function setEnv(
 
 async function deploy(ctx: ProviderContext, step: PlannedStep): Promise<StepOutcome> {
   const scope = inputString(step, "scope");
+  const name = inputString(step, "name");
+  if (!name) return fail(`Step ${step.id} is missing its project name input.`);
+
+  // Deploy targets the PLANNED project via VERCEL_PROJECT_ID/VERCEL_ORG_ID.
+  // Without this the vercel CLI resolves the project from
+  // `.vercel/project.json`, and a stale link file would ship this source to a
+  // different project than the plan named.
+  const target = await lookupProject(ctx, inputString(step, "projectId") ?? name, scope);
+  if (target.kind !== "found") {
+    return fail(target.kind === "error" ? target.message : `Vercel project \`${name}\` was not found.`);
+  }
 
   const res = await ctx.run.run(BIN, ["deploy", "--prod", "--yes", ...scopeArgs(scope)], {
     cwd: ctx.projectRoot,
+    env: projectEnv(target.project),
     timeoutMs: DEPLOY_TIMEOUT_MS,
   });
   if (res.exitCode !== 0) {
@@ -389,11 +432,18 @@ async function deploy(ctx: ProviderContext, step: PlannedStep): Promise<StepOutc
     if (ctx.signal.aborted) {
       return fail(`Deploy ${host} was cancelled while ${state || "pending"}.`, "Re-run bahama apply.");
     }
-    const polled = await vcurl(ctx, `/v13/deployments/${host}`, scope);
+    const polled = await vapi(ctx, `/v13/deployments/${host}`, scope);
     if (polled.kind === "ok") {
       state = String(polled.json["readyState"] ?? polled.json["status"] ?? "");
       const id = polled.json["id"];
       deploymentId = typeof id === "string" ? id : deploymentId;
+      // Postcondition includes WHICH project got deployed, not just readiness.
+      const polledProject = polled.json["projectId"];
+      if (typeof polledProject === "string" && polledProject !== "" && polledProject !== target.project.id) {
+        return fail(
+          `Deployment ${host} belongs to Vercel project ${polledProject}, not the planned ${target.project.id}.`,
+        );
+      }
       if (state === "READY") break;
       if (state === "ERROR" || state === "CANCELED") {
         return fail(`Deployment ${deploymentId ?? host} ended in state ${state}.`);
@@ -440,7 +490,7 @@ async function verify(
     const name = inputString(step, "name");
     const scope = inputString(step, "scope");
     if (name) {
-      const looked = await vcurl(ctx, `/v9/projects/${encodeURIComponent(name)}`, scope);
+      const looked = await vapi(ctx, `/v9/projects/${encodeURIComponent(name)}`, scope);
       if (looked.kind === "ok") url = productionUrlOf(looked.json);
     }
   }
@@ -532,6 +582,26 @@ export const vercelProvider = defineProvider({
     const teams = await ctx.run.run(BIN, ["teams", "list"]);
     const accounts = teams.exitCode === 0 ? parseTeamsList(teams.stdout) : [];
 
+    // The account operations will run under, with a DURABLE id: the selected
+    // team scope, or the personal user id (usernames get renamed; ids don't).
+    const appIntent = req.intent.find((intent) => intent.role === "application");
+    const scopeConfig = appIntent ? configString(appIntent.config, "scope") : null;
+    let account: ProviderAccount | undefined;
+    if (scopeConfig) {
+      account = accounts.find((entry) => entry.id === scopeConfig) ?? {
+        id: scopeConfig,
+        label: scopeConfig,
+        kind: "team",
+      };
+    } else {
+      const userRes = await vapi(ctx, "/v2/user", null);
+      if (userRes.kind === "ok") {
+        const user = userRes.json["user"] as JsonObject | undefined;
+        const uid = user?.["uid"] ?? user?.["id"];
+        if (typeof uid === "string" && uid !== "") account = { id: uid, label: identity, kind: "personal" };
+      }
+    }
+
     const mismatch = linkedProjectWarning(ctx.projectRoot, req);
     if (mismatch) warnings.push(mismatch);
 
@@ -552,7 +622,7 @@ export const vercelProvider = defineProvider({
 
     return {
       tool,
-      auth: { state: "authenticated", identity },
+      auth: { state: "authenticated", identity, ...(account !== undefined ? { account } : {}) },
       accounts,
       observed,
       ...(warnings.length > 0 ? { warnings } : {}),
@@ -595,8 +665,11 @@ export const vercelProvider = defineProvider({
     const key = appIntent.resourceKey;
     const observed = req.probe.observed[key] as JsonObject | undefined;
     const exists = observed?.["exists"] === true;
-    const locked = lockedProjectId(req, key) !== null;
-    const baseInputs = { name, scope };
+    const pinnedId = lockedProjectId(req, key);
+    const locked = pinnedId !== null;
+    // The locked project id rides every step so execution pins the vercel CLI
+    // to the planned project (VERCEL_PROJECT_ID) instead of .vercel/project.json.
+    const baseInputs = { name, scope, projectId: pinnedId };
 
     const steps: ContributedStep[] = [];
     steps.push({
@@ -735,7 +808,7 @@ export const vercelProvider = defineProvider({
         });
         continue;
       }
-      const detailRes = await vcurl(ctx, `/v9/projects/${looked.project.id}`, scope);
+      const detailRes = await vapi(ctx, `/v9/projects/${looked.project.id}`, scope);
       const url = detailRes.kind === "ok" ? productionUrlOf(detailRes.json) : null;
       resources.push({
         resourceKey: intent.resourceKey,

@@ -68,7 +68,18 @@ describe("planning", () => {
     }
     const resolved = await makeProject({ simulate: { accounts: ["team-a", "team-b"], account: "team-b" } });
     const ok = expectPlan(await plan(resolved));
-    expect(ok.plan.accounts["fake"]).toBe("team-b");
+    expect(ok.plan.accounts["fake"]).toEqual({ id: "team-b", label: "team-b" });
+  });
+
+  it("rejects manifests with unknown structural keys instead of silently stripping them", () => {
+    expect(() =>
+      validateManifest({
+        version: 1,
+        project: { name: "x" },
+        application: { provider: "fake", framework: "fake-framework" },
+        bindingsTypo: {},
+      }),
+    ).toThrow(/bindingsTypo/);
   });
 
   it("rejects manifests containing resolved identity fields", () => {
@@ -138,6 +149,33 @@ describe("apply and receipts", () => {
     expect(outcome.kind).toBe("succeeded");
   });
 
+  it("re-executes every step when an unchanged plan is applied again (edit → deploy → edit → deploy)", async () => {
+    const root = await makeProject();
+    const first = expectPlan(await plan(root));
+    await apply(root, first.plan.planId);
+
+    // Iteration loop: routine redeploy, applied to completion.
+    const second = expectPlan(await plan(root));
+    expect((await apply(root, second.plan.planId, false)).kind).toBe("succeeded");
+    const before = (await fakeLiveState(root)).resources["application"]!.deployments;
+
+    // A code edit does not change intent or lock, so the NEXT compile yields
+    // the SAME plan id — and applying it must still redeploy, not skip every
+    // step against the previous run's receipts.
+    await writeFile(join(root, "index.ts"), "export const edited = true;\n");
+    const third = expectPlan(await plan(root));
+    expect(third.plan.planId).toBe(second.plan.planId);
+    const outcome = await apply(root, third.plan.planId, false);
+    expect(outcome.kind).toBe("succeeded");
+    if (outcome.kind === "succeeded") {
+      const deployStep = outcome.steps.find((step) => step.id === "application-deploy")!;
+      expect(deployStep.status).toBe("succeeded");
+      expect(outcome.steps.every((step) => step.status === "succeeded")).toBe(true);
+    }
+    const after = (await fakeLiveState(root)).resources["application"]!.deployments;
+    expect(after).toBe(before + 1);
+  });
+
   it("downgrades a redeploy to consequential when provider config files change", async () => {
     const root = await makeProject();
     const first = expectPlan(await plan(root));
@@ -165,6 +203,24 @@ describe("apply and receipts", () => {
     await writeFile(join(root, "bahama.yaml"), manifest.replace("test-app", "renamed-app"));
     const outcome = await apply(root, first.plan.planId);
     expect(outcome.kind).toBe("stale");
+  });
+
+  it("rejects a plan file that was edited after review (integrity check)", async () => {
+    const root = await makeProject();
+    const { plan: doc } = expectPlan(await plan(root));
+
+    // Tamper with a step input after the plan was reviewed. The plan id is a
+    // content hash of the whole document, so apply must refuse the file.
+    const path = join(root, ".bahama", "plans", `${doc.planId}.json`);
+    const stored = JSON.parse(await readFile(path, "utf8")) as {
+      steps: Array<{ inputs?: Record<string, unknown> }>;
+    };
+    stored.steps[0]!.inputs = { ...stored.steps[0]!.inputs, name: "tampered-target" };
+    await writeFile(path, JSON.stringify(stored, null, 2));
+
+    const outcome = await apply(root, doc.planId);
+    expect(outcome.kind).toBe("stale");
+    if (outcome.kind === "stale") expect(outcome.message).toContain("integrity");
   });
 });
 

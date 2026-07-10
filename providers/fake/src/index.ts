@@ -129,9 +129,10 @@ export const fakeProvider = defineProvider({
       const live = state.resources[intent.resourceKey];
       observed[intent.resourceKey] = live ? { exists: true, id: live.id } : { exists: false };
     }
+    const active = simulate.account ?? accounts[0]!;
     return {
       tool: { installed: true, version: "1.0.0", compatibility: "tested" },
-      auth: { state: "authenticated", identity: simulate.account ?? accounts[0]! },
+      auth: { state: "authenticated", identity: active, account: { id: active, label: active } },
       accounts: accounts.map((id) => ({ id, label: id })),
       observed,
     };

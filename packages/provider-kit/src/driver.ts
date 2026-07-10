@@ -53,6 +53,12 @@ export interface ProbeResult {
     state: "authenticated" | "unauthenticated" | "expired" | "mismatch";
     /** Display identity, e.g. an email or username. Never a token. */
     identity?: string;
+    /**
+     * The account/team/org that operations will run under, with a DURABLE
+     * provider id. Usernames and emails are labels that get renamed; the id
+     * is what the lock records and revalidates against.
+     */
+    account?: ProviderAccount;
     loginHint?: string;
   };
   accounts: ProviderAccount[];

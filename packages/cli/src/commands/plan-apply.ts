@@ -67,7 +67,7 @@ async function applyToEnvelope(projectRoot: string, command: string, planId: str
     case "approval_required":
       return envelope(command, "approval_required", outcome.message, {
         planId: outcome.plan.planId,
-        accounts: outcome.plan.accounts,
+        accounts: outcome.plan.accounts as unknown as JsonObject,
         steps: outcome.plan.steps as unknown as JsonObject[],
       });
     case "stale":

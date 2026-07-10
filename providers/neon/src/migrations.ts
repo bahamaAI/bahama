@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * The in-process migration executor, isolated from `pg` behind a tiny
  * query-executor callback so tests can inject a recording stub and the driver
@@ -8,6 +10,11 @@ export interface MigrationFile {
   /** File name, e.g. `0001_init.sql`. Ordering is lexicographic by name. */
   name: string;
   sql: string;
+}
+
+/** Content hash of one migration — what the ledger and the plan both record. */
+export function checksumOf(sql: string): string {
+  return `sha256:${createHash("sha256").update(sql).digest("hex")}`;
 }
 
 /** Minimal query surface: `pg.Client#query` satisfies it directly. */
@@ -55,6 +62,11 @@ export function assertNonDestructive(files: MigrationFile[]): void {
  * Applies every unapplied migration in name order, each inside its own
  * transaction that also records the ledger row — a migration and its
  * bookkeeping commit or roll back together.
+ *
+ * The ledger stores each migration's CONTENT hash, not just its name: an
+ * already-applied file whose content no longer matches its recorded checksum
+ * is drift (someone edited history), and the run fails loudly instead of
+ * silently ignoring the edit.
  */
 export async function runMigrations(
   files: MigrationFile[],
@@ -64,22 +76,35 @@ export async function runMigrations(
 
   await exec(
     `create table if not exists ${MIGRATIONS_TABLE} (` +
-      "name text primary key, applied_at timestamptz not null default now())",
+      "name text primary key, checksum text, applied_at timestamptz not null default now())",
   );
-  const recorded = await exec(`select name from ${MIGRATIONS_TABLE}`);
-  const done = new Set(recorded.rows.map((row) => String(row["name"])));
+  const recorded = await exec(`select name, checksum from ${MIGRATIONS_TABLE}`);
+  const done = new Map<string, string | null>();
+  for (const row of recorded.rows) {
+    done.set(String(row["name"]), row["checksum"] == null ? null : String(row["checksum"]));
+  }
 
   const applied: string[] = [];
   const alreadyApplied: string[] = [];
   for (const file of files) {
-    if (done.has(file.name)) {
+    const recordedChecksum = done.get(file.name);
+    if (recordedChecksum !== undefined) {
+      if (recordedChecksum !== null && recordedChecksum !== checksumOf(file.sql)) {
+        throw new Error(
+          `${file.name} was edited after it was applied (checksum mismatch). ` +
+            "Applied migrations are immutable — add a new migration instead.",
+        );
+      }
       alreadyApplied.push(file.name);
       continue;
     }
     await exec("begin");
     try {
       await exec(file.sql);
-      await exec(`insert into ${MIGRATIONS_TABLE} (name) values ($1)`, [file.name]);
+      await exec(`insert into ${MIGRATIONS_TABLE} (name, checksum) values ($1, $2)`, [
+        file.name,
+        checksumOf(file.sql),
+      ]);
       await exec("commit");
     } catch (error) {
       try {

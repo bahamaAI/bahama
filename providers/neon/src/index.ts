@@ -25,6 +25,7 @@ import {
 } from "@bahama-ai/provider-kit";
 import {
   assertNonDestructive,
+  checksumOf,
   countApplied,
   runMigrations,
   type MigrationFile,
@@ -33,6 +34,7 @@ import {
 
 export {
   assertNonDestructive,
+  checksumOf,
   countApplied,
   findDestructiveStatement,
   runMigrations,
@@ -62,8 +64,12 @@ const intentSchema = z
     name: z.string().min(1).optional(),
     /** Neon region id, e.g. `aws-us-east-1`. */
     region: z.string().min(1).optional(),
-    /** Owning organization; a decision writes this back when ambiguous. */
-    orgId: z.string().min(1).optional(),
+    /**
+     * Owning organization (id or slug); a decision writes this back when
+     * ambiguous. Deliberately NOT named `orgId` — the manifest validator
+     * rejects ID-shaped keys so agents never learn to fabricate resolved ids.
+     */
+    org: z.string().min(1).optional(),
   })
   .passthrough()
   .transform((value) => value as JsonObject);
@@ -157,6 +163,12 @@ function parseIdentity(text: string): string {
   if (typeof parsed?.name === "string" && parsed.name !== "") return parsed.name;
   if (typeof parsed?.login === "string" && parsed.login !== "") return parsed.login;
   return "neon user";
+}
+
+/** Durable user id from `neon me` output, when the CLI provides one. */
+function parseUserId(text: string): string | null {
+  const parsed = parseJson(text) as { id?: unknown } | null;
+  return typeof parsed?.id === "string" && parsed.id !== "" ? parsed.id : null;
 }
 
 /* -------------------------------- intent helpers ------------------------- */
@@ -284,12 +296,15 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
   if (connectionFromCreate) {
     connectionRef = ctx.secrets.seal(`${resourceKey}.connectionUrl`, connectionFromCreate.trim());
   } else {
-    const cs = await ctx.run.run(bin, ["connection-string", "--project-id", projectId]);
-    const value = cs.stdout.trim();
-    if (cs.exitCode !== 0 || value === "") {
+    // captureSecretStdout seals INSIDE the runner, so the raw string never
+    // reaches this driver — cs.stdout arrives already redacted.
+    const cs = await ctx.run.run(bin, ["connection-string", "--project-id", projectId], {
+      captureSecretStdout: { name: `${resourceKey}.connectionUrl` },
+    });
+    if (cs.exitCode !== 0 || !cs.secret) {
       return fail(`Fetching the Neon connection string failed: ${errText(cs.stderr, cs.stdout)}`);
     }
-    connectionRef = ctx.secrets.seal(`${resourceKey}.connectionUrl`, value);
+    connectionRef = cs.secret;
   }
 
   const check = await ctx.run.run(bin, ["projects", "get", projectId, "--output", "json"]);
@@ -314,6 +329,25 @@ async function applyMigrations(
   const files = readMigrationFiles(ctx.projectRoot);
   if (files.length === 0) {
     return { status: "succeeded", postconditionVerified: true, receipt: { total: 0, applied: 0 } };
+  }
+
+  // Approval covers CONTENT, not filenames: the plan recorded a checksum per
+  // migration, and SQL that changed (or appeared) since the plan was compiled
+  // is not what the user approved.
+  const planned = new Map<string, string>();
+  for (const entry of (step.inputs?.["files"] as Array<{ name?: unknown; checksum?: unknown }> | undefined) ?? []) {
+    if (typeof entry?.name === "string" && typeof entry?.checksum === "string") {
+      planned.set(entry.name, entry.checksum);
+    }
+  }
+  const drifted = files.filter((file) => planned.get(file.name) !== checksumOf(file.sql));
+  if (drifted.length > 0 || planned.size !== files.length) {
+    return fail(
+      `The checked-in migrations changed after this plan was compiled` +
+        (drifted.length > 0 ? ` (${drifted.map((file) => file.name).join(", ")})` : "") +
+        ".",
+      "Re-run bahama plan so the approved plan covers the current SQL.",
+    );
   }
 
   // Reject destructive SQL before touching the database or the secret.
@@ -439,6 +473,24 @@ export const neonProvider = defineProvider({
     const orgsRes = await ctx.run.run(bin, ["orgs", "list", "--output", "json"]);
     const accounts = orgsRes.exitCode === 0 ? parseOrgs(orgsRes.stdout) : [];
 
+    // Durable account: the selected org, else the personal user id.
+    const orgConfig =
+      req.intent
+        .filter((intent) => intent.role === "database")
+        .map((intent) => configString(intent.config, "org"))
+        .find((value) => value !== null) ?? null;
+    let account: ProviderAccount | undefined;
+    if (orgConfig) {
+      account = accounts.find((entry) => entry.id === orgConfig) ?? {
+        id: orgConfig,
+        label: orgConfig,
+        kind: "org",
+      };
+    } else {
+      const userId = parseUserId(me.stdout);
+      if (userId) account = { id: userId, label: identity, kind: "personal" };
+    }
+
     const observed: JsonObject = {};
     for (const intent of req.intent) {
       if (intent.role !== "database") continue;
@@ -450,7 +502,7 @@ export const neonProvider = defineProvider({
         continue;
       }
       const name = resolveName(intent);
-      const orgId = configString(intent.config, "orgId");
+      const orgId = configString(intent.config, "org");
       const listed = await ctx.run.run(bin, [
         "projects",
         "list",
@@ -467,7 +519,7 @@ export const neonProvider = defineProvider({
 
     return {
       tool,
-      auth: { state: "authenticated", identity },
+      auth: { state: "authenticated", identity, ...(account !== undefined ? { account } : {}) },
       accounts,
       observed,
       ...(warnings.length > 0 ? { warnings } : {}),
@@ -481,7 +533,7 @@ export const neonProvider = defineProvider({
 
     for (const intent of req.intent) {
       if (intent.role !== "database") continue;
-      const orgId = configString(intent.config, "orgId");
+      const orgId = configString(intent.config, "org");
 
       if (req.probe.accounts.length > 1 && !orgId) {
         decisions.push({
@@ -490,7 +542,8 @@ export const neonProvider = defineProvider({
           providerId: PROVIDER_ID,
           question: "Multiple Neon organizations are available. Which one should own this database?",
           options: req.probe.accounts.map((account) => ({ id: account.id, label: account.label })),
-          writeBack: `resources.${intent.resourceKey}.config.orgId`,
+          // `org`, not `orgId`: the manifest validator rejects ID-shaped keys.
+          writeBack: `resources.${intent.resourceKey}.config.org`,
         });
         continue;
       }
@@ -530,7 +583,9 @@ export const neonProvider = defineProvider({
           effects: { migratesSchema: true },
           dependsOn: [ensureId],
           consumes: [`resources.${intent.resourceKey}.connectionUrl`],
-          inputs: { files: migrations.map((file) => file.name) },
+          // Name AND content hash: approving this plan approves this exact
+          // SQL, and execution rejects files that changed afterwards.
+          inputs: { files: migrations.map((file) => ({ name: file.name, checksum: checksumOf(file.sql) })) },
           postcondition: "All checked-in migrations are recorded as applied in _bahama_migrations.",
         });
       }
@@ -593,7 +648,7 @@ export const neonProvider = defineProvider({
         continue;
       }
       const name = resolveName(intent);
-      const orgId = configString(intent.config, "orgId");
+      const orgId = configString(intent.config, "org");
       const listed = await ctx.run.run(bin, [
         "projects",
         "list",

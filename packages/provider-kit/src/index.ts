@@ -28,6 +28,7 @@ export type {
   HttpResponse,
   HttpClient,
   Logger,
+  CredentialSource,
   ProviderContext,
 } from "./context.js";
 export {

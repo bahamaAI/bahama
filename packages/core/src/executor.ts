@@ -13,7 +13,7 @@ import {
 import { addressString } from "./classify.js";
 import { canonicalJson } from "./hash.js";
 import { inspectProject, providerConfigFingerprints } from "./inspect.js";
-import { appendJournal, readJournal, verifiedSteps } from "./journal.js";
+import { appendJournal, hasUnfinishedApply, readJournal, verifiedSteps } from "./journal.js";
 import { loadLock, lockHash, saveLock, emptyLock, type Lockfile } from "./lockfile.js";
 import { loadManifest, manifestHash } from "./manifest.js";
 import { OperationLock } from "./oplock.js";
@@ -54,10 +54,14 @@ export async function applyPlan(
   planId: string,
   options: { approved: boolean },
 ): Promise<ApplyOutcome> {
-  const plan = await loadPlan(deps.projectRoot, planId);
-  if (!plan) {
+  const loaded = await loadPlan(deps.projectRoot, planId);
+  if (loaded.kind === "missing") {
     return { kind: "stale", message: `Plan ${planId} not found. Run \`bahama plan\` to compile a fresh plan.` };
   }
+  if (loaded.kind === "invalid") {
+    return { kind: "stale", message: `${loaded.message} Run \`bahama plan\` to compile a fresh plan.` };
+  }
+  const plan = loaded.plan;
 
   // Validity: intent and resolution must be exactly what was planned. Source
   // drift deliberately does NOT invalidate — apply ships the source that
@@ -71,7 +75,10 @@ export async function applyPlan(
   }
   let lock = await loadLock(deps.projectRoot);
   const priorEntries = await readJournal(deps.projectRoot);
-  const isResume = priorEntries.some((entry) => entry.type === "apply-start" && entry.planId === planId);
+  // Resume = the plan's most recent apply never finished. A COMPLETED apply
+  // does not make later applies of the same plan "resumes" — they are fresh
+  // runs that re-execute every step.
+  const isResume = hasUnfinishedApply(priorEntries, planId);
   // A resumed apply legitimately advanced the lock through its own verified
   // steps, so the exact-hash check only applies to a plan's FIRST attempt.
   if (!isResume && lockHash(lock) !== plan.lockHash) {
@@ -301,7 +308,7 @@ async function executeStep(
     if (outcome.identity && Object.keys(outcome.identity).length > 0) {
       const resourceKey = step.resourceKey ?? "application";
       const existing = lock.resources[resourceKey];
-      const accountId = plan.accounts[step.providerId];
+      const accountId = plan.accounts[step.providerId]?.id;
       lock.resources[resourceKey] = {
         provider: step.providerId,
         ...(accountId !== undefined ? { accountId } : {}),
