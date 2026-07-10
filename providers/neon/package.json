@@ -1,8 +1,11 @@
 {
-  "name": "@bahama-ai/core",
+  "name": "@bahama-ai/provider-neon",
   "version": "0.1.0-alpha.1",
-  "private": true,
-  "description": "Bahama's plan, execution, state, and secret engine. Internal to the CLI; the public surface is @bahama-ai/provider-kit.",
+  "description": "Neon provider driver. Serverless Postgres on the user's own Neon account, wrapping the official neon CLI (neonctl): project ensure/adopt, sealed connection-string production, and an in-process SQL migration runner.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": ["dist", "README.md"],
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -18,13 +21,10 @@
   },
   "dependencies": {
     "@bahama-ai/provider-kit": "0.1.0-alpha.1",
-    "execa": "^9.6.0",
-    "semver": "^7.7.0",
-    "yaml": "^2.8.0",
+    "pg": "^8.16.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
-    "@types/semver": "^7.7.0"
+    "@types/pg": "^8.11.0"
   }
 }

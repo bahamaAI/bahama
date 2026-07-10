@@ -25,6 +25,8 @@
     "@bahama-ai/provider-bahama-cloud": "0.1.0-alpha.1",
     "@bahama-ai/provider-fake": "0.1.0-alpha.1",
     "@bahama-ai/provider-kit": "0.1.0-alpha.1",
+    "@bahama-ai/provider-neon": "0.1.0-alpha.1",
+    "@bahama-ai/provider-vercel": "0.1.0-alpha.1",
     "commander": "^12.1.0",
     "yaml": "^2.8.0"
   },

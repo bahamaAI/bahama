@@ -4,11 +4,27 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src"],
+  "include": [
+    "src"
+  ],
   "references": [
-    { "path": "../provider-kit" },
-    { "path": "../core" },
-    { "path": "../../providers/fake" },
-    { "path": "../../providers/bahama-cloud" }
+    {
+      "path": "../provider-kit"
+    },
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../../providers/fake"
+    },
+    {
+      "path": "../../providers/bahama-cloud"
+    },
+    {
+      "path": "../../providers/vercel"
+    },
+    {
+      "path": "../../providers/neon"
+    }
   ]
 }
