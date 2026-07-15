@@ -16,7 +16,9 @@
     "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "tsc --build"
+    "typecheck": "tsc --build",
+    "version:check": "node scripts/check-versions.mjs",
+    "version:set": "node scripts/set-version.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",
