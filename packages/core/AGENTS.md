@@ -31,7 +31,7 @@ Do not weaken one invariant to repair another. For example, do not make resume c
 
 ## Change rules
 
-- Behavioral changes require an executable regression in the relevant core test or `providers/fake/test/contract.test.ts`.
+- Behavioral changes require an executable regression in the relevant core test or `providers/test/test/contract.test.ts`.
 - Changes to manifest, lock, plan, journal, or result shapes require deliberate compatibility review. Never silently reinterpret an existing committed file.
 - Changes to runner or broker capture order require tests proving that raw secret bytes cannot reach stdout, stderr, errors, logs, or receipts.
 - Classification changes require tests for both the newly routine/consequential case and its nearest unsafe counterpart.
@@ -43,8 +43,8 @@ Do not weaken one invariant to repair another. For example, do not make resume c
 From the repository root:
 
 ```bash
-npm run build -w @bahama-ai/core
-npx vitest run packages/core providers/fake
+npm run build -w @bahama/core
+npx vitest run packages/core providers/test
 npm run lint
 ```
 

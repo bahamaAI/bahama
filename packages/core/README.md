@@ -1,16 +1,16 @@
-# @bahama-ai/core
+# @bahama/core
 
 Bahama's internal deterministic engine for intent validation, planning, approval, execution, verification, state, resume, and secret-safe provider orchestration.
 
-> **This is an internal workspace, not a published package or supported public API.** Its code is bundled into [`@bahama-ai/cli`](https://www.npmjs.com/package/@bahama-ai/cli), while the workspace stays separate to preserve the engine boundary and focused tests.
+> **This is an internal workspace, not a published package or supported public API.** Its code is bundled into [`bahama`](https://www.npmjs.com/package/bahama), while the workspace stays separate to preserve the engine boundary and focused tests.
 
 Use:
 
-- [`@bahama-ai/cli`](https://www.npmjs.com/package/@bahama-ai/cli) to operate Bahama.
-- [`@bahama-ai/cloud-sdk`](https://www.npmjs.com/package/@bahama-ai/cloud-sdk) inside an application using Bahama Cloud resources.
+- [`bahama`](https://www.npmjs.com/package/bahama) to operate Bahama.
+- [`bahama-runtime`](https://www.npmjs.com/package/bahama-runtime) inside an application using Bahama Cloud resources.
 - [`packages/provider-kit`](../provider-kit) when contributing a provider inside this monorepo.
 
-Do not install or build an external integration directly on `@bahama-ai/core`.
+Do not install or build an external integration directly on `@bahama/core`.
 
 ## What core does
 
@@ -68,7 +68,7 @@ These boundaries are intentionally separate. In particular, the lock is not a ge
 - Repository identity prevents a copied lock from silently controlling the original stack.
 - Secret values are sealed and registered with redaction before ordinary driver and error paths can observe them.
 
-These properties are specified by core tests and the fake provider's end-to-end contract suite.
+These properties are specified by core tests and the test provider's end-to-end contract suite.
 
 ## Contributing
 
@@ -76,8 +76,8 @@ Core changes can affect every provider and every CLI workflow. Work in the [Baha
 
 ```bash
 npm install
-npm run build -w @bahama-ai/core
-npx vitest run packages/core providers/fake
+npm run build -w @bahama/core
+npx vitest run packages/core providers/test
 npm run lint
 ```
 

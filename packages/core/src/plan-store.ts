@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import type { JsonValue } from "@bahama-ai/provider-kit";
+import type { JsonValue } from "@bahama/provider-kit";
 import { atomicWriteFile } from "./fs-util.js";
 import { contentId } from "./hash.js";
 import { BAHAMA_DIR } from "./journal.js";

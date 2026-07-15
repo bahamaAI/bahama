@@ -9,7 +9,7 @@ import {
   type ProviderDriver,
   type SecretRef,
   type StepOutcome,
-} from "@bahama-ai/provider-kit";
+} from "@bahama/provider-kit";
 import { addressString } from "./classify.js";
 import { canonicalJson } from "./hash.js";
 import { inspectProject, providerConfigFingerprints } from "./inspect.js";

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { JsonValue } from "@bahama-ai/provider-kit";
+import type { JsonValue } from "@bahama/provider-kit";
 
 /**
  * Canonical JSON: object keys sorted recursively, no whitespace. Two

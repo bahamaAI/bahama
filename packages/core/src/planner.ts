@@ -9,7 +9,7 @@ import type {
   PlanOperation,
   Requirement,
   ResourceIntent,
-} from "@bahama-ai/provider-kit";
+} from "@bahama/provider-kit";
 import { addressString, classifyStep, type ClassificationContext } from "./classify.js";
 import { planContentId } from "./plan-store.js";
 import { providerConfigFingerprints } from "./inspect.js";

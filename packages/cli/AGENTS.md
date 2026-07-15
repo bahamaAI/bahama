@@ -26,7 +26,7 @@ src/bin.ts
 
 Start at `bin.ts` for the public command, follow the matching command workflow, then cross into core or a provider only where that workflow delegates. The published CLI bundles core, provider-kit, and official providers into `dist/bin.js`; their separate workspaces are source and test boundaries, not additional runtime packages.
 
-Adding or changing a command: register in `src/bin.ts` → workflow in `src/commands/*` → one `ResultEnvelope` rendered by `src/render.ts` → golden-path test in `test/cli.test.ts` → update `skills/bahama-builder` if agent-visible behavior changed.
+Adding or changing a command: register in `src/bin.ts` → workflow in `src/commands/*` → one `ResultEnvelope` rendered by `src/render.ts` → golden-path test in `test/cli.test.ts` → update `skills/bahama` if agent-visible behavior changed.
 
 ## Command contracts
 
@@ -49,7 +49,7 @@ Third-party credentials remain in their official CLI stores. Bahama Cloud creden
 - A command, status, envelope, or exit-code change requires CLI golden-path tests (`test/cli.test.ts`).
 - A human-output change requires `test/render.test.ts`; a JSON-contract change requires CLI assertions against the envelope.
 - An OAuth/storage/refresh change requires `test/cloud-auth.test.ts` and must preserve concurrent refresh safety.
-- A provider registration change must update setup/provider output and the `bahama-builder` skill.
+- A provider registration change must update setup/provider output and the `bahama` skill.
 - Do not describe internal exports as a supported embedding API.
 
 ## Verification
@@ -57,7 +57,7 @@ Third-party credentials remain in their official CLI stores. Bahama Cloud creden
 From the repository root:
 
 ```bash
-npm run build -w @bahama-ai/cli
+npm run build -w bahama
 node packages/cli/dist/bin.js --help
 npx vitest run packages/cli
 npm run lint

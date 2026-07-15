@@ -4,11 +4,11 @@ Use this file before setting up local Hono development, live Bahama-managed data
 
 This guidance applies when `environments` contains both `local` and a Bahama Cloud environment. Local development is a first-class target, not a post-deploy workaround.
 
-## Why The SDK Exists
+## Why The Runtime Package Exists
 
 Bahama-managed runtime resources are Worker bindings. In production, deployed Worker/Hono code can read bindings such as `env.DB` directly. In local Node or Vite development, those bindings do not exist, so code cannot directly access the Bahama-managed database the same way it does after deployment.
 
-The Bahama SDK bridges that gap for local server-side code. It uses a project-scoped dev token to proxy local database calls through Bahama to the live Bahama-managed resource. This means local testing can touch live project data. Avoid destructive operations and test-data pollution unless the user explicitly approves them.
+`bahama-runtime` bridges that gap for local server-side code. It uses a project-scoped dev token to proxy local database calls through Bahama to the live Bahama-managed resource. This means local testing can touch live project data. Avoid destructive operations and test-data pollution unless the user explicitly approves them.
 
 ## Dev Tokens
 
@@ -32,21 +32,21 @@ Do not:
 - include it in deploy archives
 - paste it into user-facing UI
 
-## SDK
+## Runtime Package
 
-Install the Bahama SDK when local server-side code needs Bahama-managed resources:
+Install the runtime package when local server-side code needs Bahama-managed resources:
 
 ```bash
-npm install @bahama-ai/cloud-sdk
+npm install bahama-runtime
 ```
 
-Use `@bahama-ai/cloud-sdk/server` from server-side code only.
+Use `bahama-runtime/server` from server-side code only.
 
 ```ts
-import {getDb} from "@bahama-ai/cloud-sdk/server";
+import {getDb} from "bahama-runtime/server";
 ```
 
-In deployed Bahama app code, the SDK can use `env.DB`. In local code, it uses the Bahama dev proxy values from `.env.local`.
+In deployed Bahama app code, the runtime package uses `env.DB`. In local code, it uses the Bahama dev proxy values from `.env.local`.
 
 ## Local Hono Adapter
 

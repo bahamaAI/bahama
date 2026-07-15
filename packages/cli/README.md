@@ -1,4 +1,4 @@
-# @bahama-ai/cli
+# bahama
 
 **The Cloud Toolkit Built for Agents.** The `bahama` CLI gives coding agents a safe, structured way to provision cloud resources, wire secrets, and deploy — on provider accounts you already have (Vercel, Neon) or the managed [Bahama Cloud](https://www.bahama.ai). Your agent writes the intent and runs the commands; you approve the plans; Bahama executes and verifies.
 
@@ -14,15 +14,17 @@ The easiest path is to let your coding agent do it. Prompt Claude Code, Codex, C
 Read https://bahama.ai/install.md and install Bahama for this workspace.
 ```
 
-Or install manually (Node.js `20.19+`):
+Or install both pieces directly (Node.js `20.19+`):
 
 ```bash
-npm install -g @bahama-ai/cli
-bahama setup --host auto   # installs the bahama-builder skill for your agent
-bahama doctor              # verify the environment
+npx -y skills add bahamaAI/bahama --skill bahama --yes
 ```
 
-Bahama Cloud needs no extra tooling. Third-party providers use their official CLIs; `bahama doctor` and `bahama plan` report exactly what's missing when something is.
+```bash
+npm install -g bahama
+```
+
+The skill teaches your agent how to operate Bahama; this package supplies the CLI that orchestrates the magic.
 
 ## Commands
 
@@ -41,7 +43,6 @@ Run `bahama <command> --help` for arguments and options. Most of the time, your 
 | `bahama auth login\|status\|logout <provider>` | Manage provider sessions via official provider flows                        |
 | `bahama config path\|get\|set`                 | Manage non-secret global CLI preferences                                    |
 | `bahama detach --approved`                     | Forget resolved identities without deleting resources (template/fork reset) |
-| `bahama setup`                                 | Install or verify the agent-host integration                                |
 
 ## For agents
 
@@ -70,7 +71,7 @@ Pass `--json` to receive one typed result envelope per command:
 
 Workflow states exit `0`. Operational failure exits `1`, invalid invocation or manifest exits `2`, internal failure exits `3`.
 
-The `bahama-builder` skill (installed by `bahama setup`) is the complete operating manual for agents.
+The `bahama` skill is the complete operating manual for agents.
 
 ## Project state
 

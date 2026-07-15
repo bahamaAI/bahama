@@ -14,7 +14,7 @@ import {
   type ProviderContext,
   type StatusReport,
   type StepOutcome,
-} from "@bahama-ai/provider-kit";
+} from "@bahama/provider-kit";
 
 const intentSchema = z.object({ envFile: z.string().min(1).default(".env.local") }).passthrough()
   .transform((value) => value as JsonObject);

@@ -1,26 +1,26 @@
-# @bahama-ai/cloud-sdk
+# bahama-runtime
 
 Server-side runtime helpers for applications using Bahama Cloud resources.
 
-The SDK lets application code use the same database API in two environments:
+The runtime package lets server-side application code use the same database API in two environments:
 
 - **Bahama Cloud production:** use the native `env.DB` database binding directly.
 - **Local development:** use a project-scoped Bahama development API without copying a database credential or replacing application code.
 
-The SDK is runtime glue. It does not provision a database, create a Bahama project, deploy an application, or replace the `bahama` CLI.
+It is runtime glue, not a general Bahama SDK. It does not provision a database, create a Bahama project, deploy an application, or replace the `bahama` CLI.
 
-> The Cloud SDK currently supports Bahama Cloud database access through the `@bahama-ai/cloud-sdk/server` entry point. It is under active development; local mode intentionally implements a documented subset of the native database interface.
+> `bahama-runtime` currently supports Bahama Cloud database access through its server-only entry point. Local mode intentionally implements a documented subset of the native database interface.
 
 ## Install
 
 ```bash
-npm install @bahama-ai/cloud-sdk
+npm install bahama-runtime
 ```
 
 Import only from the server entry point:
 
 ```ts
-import { getDb, type BahamaDatabase } from "@bahama-ai/cloud-sdk/server";
+import {getDb, type BahamaDatabase} from "bahama-runtime/server";
 ```
 
 Do not import this entry point into browser code.
@@ -30,14 +30,14 @@ Do not import this entry point into browser code.
 Write application data access against `getDb`:
 
 ```ts
-import { getDb, type BahamaDatabase } from "@bahama-ai/cloud-sdk/server";
+import {getDb, type BahamaDatabase} from "bahama-runtime/server";
 
 type Note = {
   id: number;
   body: string;
 };
 
-export async function listNotes(env: { DB?: BahamaDatabase }) {
+export async function listNotes(env: {DB?: BahamaDatabase}) {
   const db = getDb(env);
   const result = await db
     .prepare("select id, body from notes order by id desc")
@@ -46,15 +46,9 @@ export async function listNotes(env: { DB?: BahamaDatabase }) {
   return result.results ?? [];
 }
 
-export async function createNote(
-  env: { DB?: BahamaDatabase },
-  body: string,
-) {
+export async function createNote(env: {DB?: BahamaDatabase}, body: string) {
   const db = getDb(env);
-  await db
-    .prepare("insert into notes (body) values (?)")
-    .bind(body)
-    .run();
+  await db.prepare("insert into notes (body) values (?)").bind(body).run();
 }
 ```
 
@@ -169,7 +163,7 @@ Browser code should call your server/Hono route. The server route uses `getDb`.
 
 ## API reference
 
-The package exports the following from `@bahama-ai/cloud-sdk/server`:
+The package exports the following from `bahama-runtime/server`:
 
 - `getDb(env?, options?)`
 - `BahamaDatabase`
@@ -185,17 +179,17 @@ The package exports the following from `@bahama-ai/cloud-sdk/server`:
 
 ## Contributing
 
-Cloud SDK development takes place in the [Bahama monorepo](https://github.com/bahamaAI/bahama). Read the root `AGENTS.md` and `packages/cloud-sdk/AGENTS.md` before changing runtime behavior.
+Runtime development takes place in the [Bahama monorepo](https://github.com/bahamaAI/bahama). Read the root `AGENTS.md` and `packages/runtime/AGENTS.md` before changing runtime behavior.
 
 ```bash
 npm install
-npm run build -w @bahama-ai/cloud-sdk
-npx vitest run packages/cloud-sdk
+npm run build -w bahama-runtime
+npx vitest run packages/runtime
 npm run lint
-npm pack -w @bahama-ai/cloud-sdk --dry-run
+npm pack -w bahama-runtime --dry-run
 ```
 
-Changes to local-development behavior must remain synchronized with the Bahama Cloud provider and the `bahama-builder` local-development guidance.
+Changes to local-development behavior must remain synchronized with the Bahama Cloud provider and the `bahama` local-development guidance.
 
 ## License
 

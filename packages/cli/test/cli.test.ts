@@ -24,7 +24,7 @@ async function bahama(cwd: string, args: string[]): Promise<{ exitCode: number; 
   const result = await execa("node", [BIN, ...args, "--json"], {
     cwd,
     reject: false,
-    env: { BAHAMA_ENABLE_FAKE: "1", BAHAMA_CONFIG_DIR: join(cwd, ".test-config") },
+    env: { BAHAMA_ENABLE_TEST: "1", BAHAMA_CONFIG_DIR: join(cwd, ".test-config") },
   });
   let env: Envelope | null = null;
   try {
@@ -41,7 +41,7 @@ beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "bahama-cli-e2e-"));
 });
 
-describe("bahama CLI golden path (fake provider)", () => {
+describe("bahama CLI golden path (test provider)", () => {
   let planId: string;
 
   it("init writes a valid manifest and gitignores .bahama/", async () => {
@@ -50,11 +50,11 @@ describe("bahama CLI golden path (fake provider)", () => {
       "--name",
       "e2e-app",
       "--application",
-      "fake",
+      "test",
       "--framework",
-      "fake-framework",
+      "test-framework",
       "--database",
-      "fake",
+      "test",
     ]);
     expect(exitCode).toBe(0);
     expect(env!.status).toBe("succeeded");
@@ -67,9 +67,9 @@ describe("bahama CLI golden path (fake provider)", () => {
       "--name",
       "x",
       "--application",
-      "fake",
+      "test",
       "--framework",
-      "fake-framework",
+      "test-framework",
     ]);
     expect(exitCode).toBe(2);
   });
@@ -87,7 +87,7 @@ describe("bahama CLI golden path (fake provider)", () => {
     expect(env!.data["consequentialSteps"]).toBeGreaterThan(0);
     const steps = env!.data["steps"] as Array<{ providerId: string; classificationReasons?: string[] }>;
     const localReason = steps.find((step) => step.providerId === "local")!.classificationReasons!.join(" ");
-    const hostedReason = steps.find((step) => step.providerId === "fake" && step.classificationReasons?.some((reason) => reason.includes("binding DATABASE_URL")))!.classificationReasons!.join(" ");
+    const hostedReason = steps.find((step) => step.providerId === "test" && step.classificationReasons?.some((reason) => reason.includes("binding DATABASE_URL")))!.classificationReasons!.join(" ");
     expect(localReason).toContain("environments.local.variables");
     expect(hostedReason).toContain("environments.production.variables");
     planId = env!.data["planId"] as string;
@@ -133,8 +133,8 @@ describe("bahama CLI golden path (fake provider)", () => {
     expect(env!.status).toBe("succeeded");
   });
 
-  it("auth status reports the fake session", async () => {
-    const { env } = await bahama(root, ["auth", "status", "fake"]);
+  it("auth status reports the test session", async () => {
+    const { env } = await bahama(root, ["auth", "status", "test"]);
     expect(env!.status).toBe("succeeded");
     expect(env!.data["identity"]).toBe("default-account");
   });
@@ -142,11 +142,20 @@ describe("bahama CLI golden path (fake provider)", () => {
   it("providers --format agent emits model-facing prose", async () => {
     const result = await execa("node", [BIN, "providers", "--format", "agent"], {
       cwd: root,
-      env: { BAHAMA_ENABLE_FAKE: "1" },
+      env: { BAHAMA_ENABLE_TEST: "1" },
       reject: false,
     });
     expect(result.stdout).toContain("Use when:");
-    expect(result.stdout).toContain("`fake`");
+    expect(result.stdout).toContain("`test`");
+  });
+
+  it("does not expose the internal test provider by default", async () => {
+    const result = await execa("node", [BIN, "providers", "--format", "agent"], {
+      cwd: root,
+      reject: false,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("`test`");
   });
 
   it("detach requires explicit approval, then clears only local identity", async () => {

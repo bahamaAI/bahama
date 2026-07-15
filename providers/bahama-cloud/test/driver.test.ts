@@ -14,7 +14,7 @@ import type {
   ResourceIntent,
   SecretBroker,
   SecretRef,
-} from "@bahama-ai/provider-kit";
+} from "@bahama/provider-kit";
 import { bahamaCloudProvider } from "../src/index.js";
 
 const TOKEN = "test-token-abc123";
@@ -228,7 +228,7 @@ describe("probe", () => {
 });
 
 describe("plan", () => {
-  it("reconciles Cloud resources and local SDK access without deploying code", async () => {
+  it("reconciles Cloud resources and local runtime access without deploying code", async () => {
     const root = await scratchDir();
     const { ctx } = makeCtx(root, () => undefined);
     const environment: ResourceIntent = {

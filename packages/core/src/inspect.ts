@@ -1,6 +1,6 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
-import type { JsonObject } from "@bahama-ai/provider-kit";
+import type { JsonObject } from "@bahama/provider-kit";
 import { sha256Hex } from "./hash.js";
 import { LOCK_FILENAME, loadLock } from "./lockfile.js";
 import { MANIFEST_FILENAME, loadManifest } from "./manifest.js";

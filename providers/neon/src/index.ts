@@ -22,7 +22,7 @@ import {
   type StatusReport,
   type StepOutcome,
   type ToolCompatibility,
-} from "@bahama-ai/provider-kit";
+} from "@bahama/provider-kit";
 import {
   assertNonDestructive,
   checksumOf,

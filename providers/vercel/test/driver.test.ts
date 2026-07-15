@@ -16,7 +16,7 @@ import type {
   RunResult,
   SecretBroker,
   SecretRef,
-} from "@bahama-ai/provider-kit";
+} from "@bahama/provider-kit";
 import { parseDeploymentUrl, parseTeamsList, vercelProvider } from "../src/index.js";
 
 const SECRET_URL = "postgres://user:sekret@ep-cool-1.aws.neon.tech/neondb?sslmode=require";

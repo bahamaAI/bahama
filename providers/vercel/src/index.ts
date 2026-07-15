@@ -21,7 +21,7 @@ import {
   type StatusReport,
   type StepOutcome,
   type ToolCompatibility,
-} from "@bahama-ai/provider-kit";
+} from "@bahama/provider-kit";
 
 /**
  * Vercel driver: wraps the official `vercel` CLI. Mutations go through the

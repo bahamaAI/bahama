@@ -1,4 +1,4 @@
-import type { JsonValue, PlannedStep, ResultEnvelope } from "@bahama-ai/provider-kit";
+import type { JsonValue, PlannedStep, ResultEnvelope } from "@bahama/provider-kit";
 
 /**
  * Human rendering of the same typed envelope the JSON mode emits. Plain

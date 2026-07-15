@@ -1,8 +1,8 @@
-# Fake provider
+# Test provider
 
 Deterministic in-repository provider used to specify and test Bahama's provider, planning, execution, binding, and status contracts.
 
-Use it only for development and tests. It is never an infrastructure choice for a real project and appears in the CLI only when `BAHAMA_ENABLE_FAKE=1`.
+Use it only for development and tests. It is never an infrastructure choice for a real project and appears in the CLI only when `BAHAMA_ENABLE_TEST=1`.
 
 ## What it exercises
 
@@ -21,9 +21,9 @@ The [descriptor](./src/index.ts) and [contract suite](./test/contract.test.ts) t
 ## Development
 
 ```bash
-npx vitest run providers/fake
-npm run build -w @bahama-ai/provider-fake
+npx vitest run providers/test
+npm run build -w @bahama/provider-test
 npm run lint
 ```
 
-This provider is bundled with `@bahama-ai/cli` and is not published separately.
+This provider is bundled with `bahama` and is not published separately.

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { JsonObject } from "@bahama-ai/provider-kit";
+import type { JsonObject } from "@bahama/provider-kit";
 import { atomicWriteFile } from "./fs-util.js";
 
 /**

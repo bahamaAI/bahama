@@ -29,19 +29,19 @@ Provider-kit contains contracts only. It must not import core, CLI, a provider i
 
 ## Contract discipline
 
-- Avoid unnecessary renames or removals. When a breaking change is necessary, update core, the fake contract suite, every official provider, and the skill in the same change.
+- Avoid unnecessary renames or removals. When a breaking change is necessary, update core, the test contract suite, every official provider, and the skill in the same change.
 - Prefer adding optional fields with explicit semantics over widening objects to untyped data.
 - Do not expose core implementation types through this package.
 - Comments on exported types are public documentation and should explain security and lifecycle consequences, not restate TypeScript syntax.
-- A new effect, status, role, context capability, or secret operation requires fake-provider contract coverage and review of all official providers.
+- A new effect, status, role, context capability, or secret operation requires test-provider contract coverage and review of all official providers.
 
 ## Verification
 
 From the repository root:
 
 ```bash
-npm run build -w @bahama-ai/provider-kit
-npx vitest run providers/fake providers/vercel providers/neon providers/bahama-cloud
+npm run build -w @bahama/provider-kit
+npx vitest run providers/test providers/vercel providers/neon providers/bahama-cloud
 npm run lint
 ```
 

@@ -66,7 +66,7 @@ Rules:
 - Keep the app entry in `src/`.
 - Keep browser routing inside the Vite app.
 - Do not add `server/index.*`; use `vite-hono` if backend routes are needed.
-- Do not import server-only SDKs from frontend files.
+- Do not import server-only runtime packages from frontend files.
 - Do not put provider keys, database values, Bahama dev tokens, or secrets in `VITE_*` variables.
 - Use browser-safe public config only.
 

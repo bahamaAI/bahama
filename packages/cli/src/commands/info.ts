@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { JsonObject, Requirement } from "@bahama-ai/provider-kit";
+import type { JsonObject, Requirement } from "@bahama/provider-kit";
 import {
   LOCK_FILENAME,
   configPath,
@@ -9,7 +9,7 @@ import {
   loadManifest,
   readConfig,
   writeConfig,
-} from "@bahama-ai/core";
+} from "@bahama/core";
 import { UsageError, buildEngine, buildRegistry, emit, envelope, type EmitOptions } from "../runtime.js";
 
 export async function runInspect(projectRoot: string, emitOptions: EmitOptions): Promise<never> {

@@ -1,6 +1,6 @@
 {
-  "name": "@bahama-ai/provider-kit",
-  "version": "0.1.0-alpha.1",
+  "name": "@bahama/provider-kit",
+  "version": "0.1.0-alpha.2",
   "private": true,
   "description": "The provider-authoring contract used by Bahama's bundled providers.",
   "license": "MIT",

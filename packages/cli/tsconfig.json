@@ -15,7 +15,7 @@
       "path": "../core"
     },
     {
-      "path": "../../providers/fake"
+      "path": "../../providers/test"
     },
     {
       "path": "../../providers/bahama-cloud"

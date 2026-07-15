@@ -1,6 +1,6 @@
 {
   "name": "bahama",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Bahama: the agent-native infrastructure CLI. Declarative intent in bahama.yaml, deterministic plans out, verified execution against your own provider accounts.",
   "homepage": "https://github.com/bahamaAI/bahama#readme",
   "repository": {
@@ -14,7 +14,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "bahama": "./dist/bin.js"
+    "bahama": "dist/bin.js"
   },
   "files": [
     "dist/bin.js",
@@ -39,13 +39,13 @@
     "yaml": "^2.8.0"
   },
   "devDependencies": {
-    "@bahama-ai/core": "0.1.0-alpha.1",
-    "@bahama-ai/provider-bahama-cloud": "0.1.0-alpha.1",
-    "@bahama-ai/provider-fake": "0.1.0-alpha.1",
-    "@bahama-ai/provider-kit": "0.1.0-alpha.1",
-    "@bahama-ai/provider-local": "0.1.0-alpha.1",
-    "@bahama-ai/provider-neon": "0.1.0-alpha.1",
-    "@bahama-ai/provider-vercel": "0.1.0-alpha.1",
+    "@bahama/core": "0.1.0-alpha.2",
+    "@bahama/provider-bahama-cloud": "0.1.0-alpha.2",
+    "@bahama/provider-test": "0.1.0-alpha.2",
+    "@bahama/provider-kit": "0.1.0-alpha.2",
+    "@bahama/provider-local": "0.1.0-alpha.2",
+    "@bahama/provider-neon": "0.1.0-alpha.2",
+    "@bahama/provider-vercel": "0.1.0-alpha.2",
     "esbuild": "^0.28.1"
   }
 }

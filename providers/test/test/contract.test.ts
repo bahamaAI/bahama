@@ -1,18 +1,18 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { applyPlan, compilePlan, emptyLock, loadLock, saveLock, savePlan, validateManifest } from "@bahama-ai/core";
-import type { ProviderDriver } from "@bahama-ai/provider-kit";
+import { applyPlan, compilePlan, emptyLock, loadLock, saveLock, savePlan, validateManifest } from "@bahama/core";
+import type { ProviderDriver } from "@bahama/provider-kit";
 import {
   apply,
   engine,
   expectPlan,
-  fakeLiveState,
+  testLiveState,
   makeProject,
   persistedState,
   plan,
 } from "./helpers.js";
-import { fakeProvider } from "../src/index.js";
+import { testProvider } from "../src/index.js";
 
 describe("planning", () => {
   it("compiles deterministic plans — same inputs, same plan id", async () => {
@@ -47,7 +47,7 @@ describe("planning", () => {
     expect(outcome.kind).toBe("blocked");
     if (outcome.kind === "blocked") {
       expect(outcome.status).toBe("installation_required");
-      expect(outcome.requirements[0]).toMatchObject({ kind: "installation", installHint: "npm i -g fake-cli" });
+      expect(outcome.requirements[0]).toMatchObject({ kind: "installation", installHint: "npm i -g test-cli" });
     }
   });
 
@@ -68,7 +68,7 @@ describe("planning", () => {
     }
     const resolved = await makeProject({ simulate: { accounts: ["team-a", "team-b"], account: "team-b" } });
     const ok = expectPlan(await plan(resolved));
-    expect(ok.plan.accounts["fake"]).toEqual({ id: "team-b", label: "team-b" });
+    expect(ok.plan.accounts["test"]).toEqual({ id: "team-b", label: "team-b" });
   });
 
   it("rejects manifests with unknown structural keys instead of silently stripping them", () => {
@@ -76,7 +76,7 @@ describe("planning", () => {
       validateManifest({
         version: 1,
         project: { name: "x" },
-        application: { provider: "fake", framework: "fake-framework" },
+        application: { provider: "test", framework: "test-framework" },
         bindingsTypo: {},
       }),
     ).toThrow(/bindingsTypo/);
@@ -87,7 +87,7 @@ describe("planning", () => {
       validateManifest({
         version: 1,
         project: { name: "x" },
-        application: { provider: "fake", framework: "fake-framework", config: { projectId: "prj_123" } },
+        application: { provider: "test", framework: "test-framework", config: { projectId: "prj_123" } },
       }),
     ).toThrow(/bahama\.lock/);
   });
@@ -97,9 +97,9 @@ describe("planning", () => {
       validateManifest({
         version: 1,
         project: { name: "x" },
-        application: { framework: "fake-framework" },
-        environments: { production: { provider: "fake" } },
-        resources: { database: { provider: "fake", engine: "fakedb" } },
+        application: { framework: "test-framework" },
+        environments: { production: { provider: "test" } },
+        resources: { database: { provider: "test", engine: "testdb" } },
         bindings: {
           DATABASE_URL: {
             from: "resources.database.connectionUrl",
@@ -124,23 +124,23 @@ describe("apply and receipts", () => {
     expect(outcome.kind).toBe("succeeded");
 
     const lock = (await loadLock(root))!;
-    expect(lock.resources["database"]!.identity["resourceId"]).toBe("fakedb_database");
-    expect(lock.resources["application"]!.identity["resourceId"]).toBe("fakeapp_application");
+    expect(lock.resources["database"]!.identity["resourceId"]).toBe("testdb_database");
+    expect(lock.resources["application"]!.identity["resourceId"]).toBe("testapp_application");
     expect(lock.bindings).toContainEqual({
       name: "DATABASE_URL",
       from: "resources.database.connectionUrl",
       to: "application.productionEnvironment",
     });
 
-    // The secret reached the fake "remote" side...
-    const live = await fakeLiveState(root);
+    // The secret reached the test "remote" side...
+    const live = await testLiveState(root);
     const secretValue = live.resources["application"]!.envVars["DATABASE_URL"]!;
-    expect(secretValue).toMatch(/^fakedb:\/\//);
+    expect(secretValue).toMatch(/^testdb:\/\//);
 
     // ...and appears in NO persisted local state: journal, plans, lock, manifest.
     const persisted = await persistedState(root);
     expect(persisted).not.toContain(secretValue);
-    expect(persisted).not.toContain("fakedb://");
+    expect(persisted).not.toContain("testdb://");
   });
 
   it("records config fingerprints on deploy receipts", async () => {
@@ -175,7 +175,7 @@ describe("apply and receipts", () => {
     // Iteration loop: routine redeploy, applied to completion.
     const second = expectPlan(await plan(root));
     expect((await apply(root, second.plan.planId, false)).kind).toBe("succeeded");
-    const before = (await fakeLiveState(root)).resources["application"]!.deployments;
+    const before = (await testLiveState(root)).resources["application"]!.deployments;
 
     // A code edit does not change intent or lock, so the NEXT compile yields
     // the SAME plan id — and applying it must still redeploy, not skip every
@@ -190,7 +190,7 @@ describe("apply and receipts", () => {
       expect(deployStep.status).toBe("succeeded");
       expect(outcome.steps.every((step) => step.status === "succeeded")).toBe(true);
     }
-    const after = (await fakeLiveState(root)).resources["application"]!.deployments;
+    const after = (await testLiveState(root)).resources["application"]!.deployments;
     expect(after).toBe(before + 1);
   });
 
@@ -253,7 +253,7 @@ describe("apply and receipts", () => {
 
 describe("failure, resume, and re-derivation", () => {
   it("resumes after a mid-apply failure without recreating resources, re-deriving secrets in a fresh process", async () => {
-    const root = await makeProject({ simulate: { failOnce: ["fake.env.set"] } });
+    const root = await makeProject({ simulate: { failOnce: ["test.env.set"] } });
     const { plan: doc } = expectPlan(await plan(root));
 
     const first = await apply(root, doc.planId);
@@ -275,21 +275,21 @@ describe("failure, resume, and re-derivation", () => {
     }
 
     // Not recreated: same resource id, and the transfer landed the right value.
-    const live = await fakeLiveState(root);
-    expect(live.resources["database"]!.id).toBe("fakedb_database");
-    expect(live.resources["application"]!.envVars["DATABASE_URL"]).toMatch(/^fakedb:\/\//);
+    const live = await testLiveState(root);
+    expect(live.resources["database"]!.id).toBe("testdb_database");
+    expect(live.resources["application"]!.envVars["DATABASE_URL"]).toMatch(/^testdb:\/\//);
 
     const persisted = await persistedState(root);
-    expect(persisted).not.toContain("fakedb://");
+    expect(persisted).not.toContain("testdb://");
   });
 
   it("treats success-without-verified-postcondition as failure", async () => {
     const root = await makeProject({ withDatabase: false });
     const lying: ProviderDriver = {
-      ...fakeProvider,
+      ...testProvider,
       execute: async () => ({ status: "succeeded", postconditionVerified: false }),
     };
-    const registry = new Map([["fake", lying]]);
+    const registry = new Map([["test", lying]]);
     const eng = engine(root);
     const planned = await compilePlan({ projectRoot: root, registry, contextFor: (id) => eng.contextFor(id) });
     if (planned.kind !== "plan") throw new Error("expected plan");
@@ -329,12 +329,12 @@ describe("drift and identity guards", () => {
 
     // Rewire DATABASE_URL to a second database resource.
     const manifest = (await readFile(join(root, "bahama.yaml"), "utf8"))
-      .replace("  database:\n", "  database:\n    provider: fake\n    engine: fakedb\n  database2:\n")
+      .replace("  database:\n", "  database:\n    provider: test\n    engine: testdb\n  database2:\n")
       .replace("from: resources.database.connectionUrl", "from: resources.database2.connectionUrl");
     await writeFile(join(root, "bahama.yaml"), manifest);
 
     const second = expectPlan(await plan(root));
-    const transfer = second.plan.steps.find((s) => s.action === "fake.env.set")!;
+    const transfer = second.plan.steps.find((s) => s.action === "test.env.set")!;
     expect(transfer.classification).toBe("consequential");
     expect(transfer.classificationReasons!.join(" ")).toContain("rewired");
   });
@@ -342,7 +342,7 @@ describe("drift and identity guards", () => {
   it("refuses to write a lock whose identity smuggles state or secrets", async () => {
     const root = await makeProject();
     const lock = emptyLock({ kind: "path", value: root }, "sha256:x");
-    lock.resources["database"] = { provider: "fake", identity: { connectionUrl: "postgres://nope" } };
+    lock.resources["database"] = { provider: "test", identity: { connectionUrl: "postgres://nope" } };
     await expect(saveLock(root, lock)).rejects.toThrow();
   });
 
@@ -352,15 +352,15 @@ describe("drift and identity guards", () => {
     await apply(root, first.plan.planId);
 
     // Simulate out-of-band replacement of the live resource.
-    const statePath = join(root, ".fake-live.json");
+    const statePath = join(root, ".test-live.json");
     const live = JSON.parse(await readFile(statePath, "utf8"));
-    live.resources["database"].id = "fakedb_replaced";
+    live.resources["database"].id = "testdb_replaced";
     await writeFile(statePath, JSON.stringify(live));
 
     const eng = engine(root);
-    const report = await fakeProvider.status(eng.contextFor("fake"), {
+    const report = await testProvider.status(eng.contextFor("test"), {
       intent: [{ resourceKey: "database", role: "database", config: {} }],
-      locked: [{ resourceKey: "database", identity: { resourceId: "fakedb_database" } }],
+      locked: [{ resourceKey: "database", identity: { resourceId: "testdb_database" } }],
     });
     expect(report.resources[0]!.drift[0]).toMatchObject({ severity: "material" });
   });

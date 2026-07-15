@@ -1,12 +1,12 @@
 {
   "name": "bahama-runtime",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Server-side runtime bridge for Bahama Cloud resources across native production and local development.",
   "homepage": "https://www.bahama.ai",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bahamaAI/bahama.git",
-    "directory": "packages/cloud-sdk"
+    "directory": "packages/runtime"
   },
   "bugs": {
     "url": "https://github.com/bahamaAI/bahama/issues"

@@ -12,7 +12,7 @@ import type {
   RunResult,
   SecretBroker,
   SecretRef,
-} from "@bahama-ai/provider-kit";
+} from "@bahama/provider-kit";
 import {
   checksumOf,
   countApplied,

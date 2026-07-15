@@ -3,8 +3,8 @@
   "references": [
     { "path": "packages/provider-kit" },
     { "path": "packages/core" },
-    { "path": "packages/cloud-sdk" },
-    { "path": "providers/fake" },
+    { "path": "packages/runtime" },
+    { "path": "providers/test" },
     { "path": "providers/bahama-cloud" },
     { "path": "providers/vercel" },
     { "path": "providers/neon" },

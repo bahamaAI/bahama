@@ -241,7 +241,7 @@ export async function runSetup(host: string, emitOptions: EmitOptions): Promise<
     envelope(
       "setup",
       "succeeded",
-      `Bahama CLI is installed and executable. Host \`${host}\`: distribute the bahama-builder skill via your agent's plugin/skill mechanism; no MCP server is required or registered.`,
+      `Bahama CLI is installed and executable. Host \`${host}\`: distribute the bahama skill via your agent's plugin/skill mechanism; no MCP server is required or registered.`,
       {
         host,
         cliVersion: "0.1.0-alpha.1",

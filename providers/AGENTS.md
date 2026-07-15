@@ -4,7 +4,7 @@ These instructions apply to every provider in this directory in addition to the 
 
 ## Provider contract
 
-- Providers import only `@bahama-ai/provider-kit`, never core, CLI, another provider, or unrestricted process APIs.
+- Providers import only `@bahama/provider-kit`, never core, CLI, another provider, or unrestricted process APIs.
 - `descriptor` is agent-facing product behavior. Keep roles, compatibility, requirements, capabilities, and use/avoid guidance exact.
 - Each provider validates its own intent `config`; core deliberately leaves that block provider-owned.
 - `probe` and `plan` are read-only and non-interactive. Return typed requirements or decisions instead of prompting or guessing.
@@ -16,7 +16,7 @@ These instructions apply to every provider in this directory in addition to the 
 
 ## Change discipline
 
-- Keep implementation, descriptor prose, realistic redacted fixtures, and the `bahama-builder` skill synchronized.
+- Keep implementation, descriptor prose, realistic redacted fixtures, and the `bahama` skill synchronized.
 - Preserve durable account and resource IDs. Never depend on a CLI's implicit account or local project link when the plan or lock specifies one.
 - Parse external responses in small helpers and add the real redacted shape as a fixture when a provider changes.
 - A new action needs semantic effects, deterministic inputs, a stated postcondition, execution coverage, and status behavior.
@@ -28,7 +28,7 @@ From the repository root:
 
 ```bash
 npx vitest run providers/<provider>
-npm run build -w @bahama-ai/provider-<provider>
+npm run build -w @bahama/provider-<provider>
 npm run lint
 ```
 

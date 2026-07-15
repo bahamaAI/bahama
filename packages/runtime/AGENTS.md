@@ -1,19 +1,19 @@
-# SDK agent guide
+# Runtime agent guide
 
-These instructions apply to `packages/cloud-sdk` in addition to the repository-root `AGENTS.md`. `@bahama-ai/cloud-sdk` is an application-facing npm package and a runtime leaf. Its exported server API, behavior, errors, and README are public compatibility commitments.
+These instructions apply to `packages/runtime` in addition to the repository-root `AGENTS.md`. `bahama-runtime` is an application-facing npm package and a runtime leaf. Its exported server API, behavior, errors, and README are public compatibility commitments.
 
 ## Purpose and boundary
 
-The SDK gives server-side application code one database interface across two Bahama Cloud modes:
+The runtime package gives server-side application code one database interface across two Bahama Cloud modes:
 
 - In production, `getDb(env)` returns the native `env.DB` binding unchanged.
 - In local development, it returns a project-scoped HTTP adapter using `BAHAMA_API_BASE_URL`, `BAHAMA_PROJECT_SLUG`, and `BAHAMA_DEV_TOKEN`.
 
-The SDK does not provision resources, authenticate the Bahama CLI, read `bahama.yaml` or `bahama.lock`, plan, deploy, or choose providers. It must not depend on CLI, core, provider-kit, or a provider implementation.
+The runtime package does not provision resources, authenticate the Bahama CLI, read `bahama.yaml` or `bahama.lock`, plan, deploy, or choose providers. It must not depend on CLI, core, provider-kit, or a provider implementation.
 
 ## Runtime and security rules
 
-- The only public export path is `@bahama-ai/cloud-sdk/server`. Do not add a browser entry point for database or secret-bearing APIs.
+- The only public export path is `bahama-runtime/server`. Do not add a browser entry point for database or secret-bearing APIs.
 - Native runtime bindings take precedence over local configuration. Do not proxy production D1 access through the Bahama control plane.
 - `BAHAMA_DEV_TOKEN` is a server-side, project-scoped credential. Never log it, include it in errors, expose it through `VITE_*`/public variables, or return it to browser code.
 - Explicit options, supplied env bindings, and `process.env` are configuration inputs in that order for local mode. Preserve clear missing-config errors without including values.
@@ -34,10 +34,10 @@ The SDK does not provision resources, authenticate the Bahama CLI, read `bahama.
 From the repository root:
 
 ```bash
-npm run build -w @bahama-ai/cloud-sdk
-npx vitest run packages/cloud-sdk
+npm run build -w bahama-runtime
+npx vitest run packages/runtime
 npm run lint
-npm pack -w @bahama-ai/cloud-sdk --dry-run
+npm pack -w bahama-runtime --dry-run
 ```
 
-When changing the local development contract, also verify the Bahama Cloud provider bindings and `skills/bahama-builder/references/local-development.md` remain accurate.
+When changing the local development contract, also verify the Bahama Cloud provider bindings and `skills/bahama/references/local-development.md` remain accurate.

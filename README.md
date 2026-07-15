@@ -36,13 +36,21 @@ Bahama is built to be used by agents. To get started, just prompt your coding ag
 Read https://bahama.ai/install.md and install Bahama for this workspace.
 ```
 
-That installs the CLI and the `bahama-builder` skill — the operating manual your agent follows. From there, just ask for outcomes, mention Bahama, and your agent knows what to do:
+Or install both pieces directly:
+
+```bash
+npx -y skills add bahamaAI/bahama --skill bahama --yes
+```
+
+```bash
+npm install -g bahama
+```
+
+The skill teaches your agent how to use Bahama; the CLI safely orchestrates the magic. From there, just ask for outcomes and mention Bahama:
 
 ```text
 Let's build a snake game. I want a DB to save high scores. When it's ready, put it on the web with Bahama so I can share it with my friends.
 ```
-
-Prefer to install manually? `npm install -g @bahama-ai/cli`, then `bahama setup` to install the skill for your agent.
 
 ## How it works
 
@@ -113,24 +121,23 @@ bindings:
 | **Vercel**       | `vercel`       | Next.js, Vite, and static applications in your own Vercel account            |
 | **Neon**         | `neon`         | Serverless Postgres in your own Neon account, plus checked-in SQL migrations |
 | **Local**        | `local`        | Protected local env-file bindings so `npm run dev` just works                |
-| **Fake**         | `fake`         | Deterministic provider used to specify and test the provider contract        |
 
 The ID is the name your agent uses in `bahama.yaml` — `provider: neon`, `provider: vercel`.
 
 ## Included in this repository
 
-This monorepo includes everything needed to run Bahama — the agent skill, CLI, core engine, and all the provider contracts. The CLI ([`@bahama-ai/cli`](https://www.npmjs.com/package/@bahama-ai/cli)) bundles the entire toolkit into one npm package.
+This monorepo includes everything needed to run Bahama — the agent skill, CLI, core engine, and all the provider contracts. The CLI ([`bahama`](https://www.npmjs.com/package/bahama)) bundles the entire toolkit into one npm package.
 
-Note: [`@bahama-ai/cloud-sdk`](https://www.npmjs.com/package/@bahama-ai/cloud-sdk) is an additional package that enables local testing of Bahama Cloud projects.
+Note: [`bahama-runtime`](https://www.npmjs.com/package/bahama-runtime) is an additional package that enables local testing of Bahama Cloud projects.
 
 | Path                                             | Purpose                                                                |
 | :----------------------------------------------- | :--------------------------------------------------------------------- |
 | [`packages/cli`](packages/cli)                   | The published `bahama` command-line interface                          |
 | [`packages/core`](packages/core)                 | Planning, approval, execution, state, verification, and secrets engine |
 | [`packages/provider-kit`](packages/provider-kit) | The contract every provider implements                                 |
-| [`packages/cloud-sdk`](packages/cloud-sdk)       | Server-side runtime bridge for Bahama Cloud application resources      |
+| [`packages/runtime`](packages/runtime)           | Server-side runtime bridge for Bahama Cloud application resources      |
 | [`providers/`](providers)                        | Official provider implementations                                      |
-| [`skills/bahama-builder`](skills/bahama-builder) | The operating guide installed into a user's coding agent               |
+| [`skills/bahama`](skills/bahama)                 | The operating guide installed into a user's coding agent               |
 
 ## Contributing
 
@@ -146,22 +153,11 @@ npm run build
 npm test
 ```
 
-Your local build runs with `node packages/cli/dist/bin.js`, and the fake provider gives you the full plan/apply loop with zero accounts and zero infrastructure:
-
-```bash
-export BAHAMA_ENABLE_FAKE=1
-alias bahama="node $PWD/packages/cli/dist/bin.js"
-
-mkdir -p /tmp/bahama-lab && cd /tmp/bahama-lab
-bahama init --name bahama-lab --application fake --framework fake-framework --database fake
-bahama plan   # then: bahama apply <plan-id> --approved
-```
-
 Steps for contributing:
 
 1. Read [`AGENTS.md`](AGENTS.md) first — it holds the dependency rules and safety invariants.
 2. Keep changes small, and add a regression test for behavior changes.
-3. If agent-facing behavior changes, update the provider descriptions and `skills/bahama-builder` too.
+3. If agent-facing behavior changes, update the provider descriptions and `skills/bahama` too.
 4. Run `npm run build && npm test && npm run lint` before opening a pull request.
 
 ## License

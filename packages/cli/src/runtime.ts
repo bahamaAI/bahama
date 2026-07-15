@@ -1,17 +1,17 @@
-import type { CommandStatus, JsonObject, ProviderDriver, ResultEnvelope } from "@bahama-ai/provider-kit";
-import { Engine } from "@bahama-ai/core";
-import { bahamaCloudProvider } from "@bahama-ai/provider-bahama-cloud";
-import { fakeProvider } from "@bahama-ai/provider-fake";
-import { neonProvider } from "@bahama-ai/provider-neon";
-import { localProvider } from "@bahama-ai/provider-local";
-import { vercelProvider } from "@bahama-ai/provider-vercel";
+import type { CommandStatus, JsonObject, ProviderDriver, ResultEnvelope } from "@bahama/provider-kit";
+import { Engine } from "@bahama/core";
+import { bahamaCloudProvider } from "@bahama/provider-bahama-cloud";
+import { testProvider } from "@bahama/provider-test";
+import { neonProvider } from "@bahama/provider-neon";
+import { localProvider } from "@bahama/provider-local";
+import { vercelProvider } from "@bahama/provider-vercel";
 import { freshCloudToken } from "./cloud-auth.js";
 import { renderHuman } from "./render.js";
 
 /**
  * Static provider registry. Official providers are bundled with the CLI —
- * there is no runtime provider discovery or download. The fake provider is
- * the contract-test reference and only appears with BAHAMA_ENABLE_FAKE=1.
+ * there is no runtime provider discovery or download. The test provider is
+ * the contract-test reference and only appears with BAHAMA_ENABLE_TEST=1.
  */
 export function buildRegistry(): ReadonlyMap<string, ProviderDriver> {
   const registry = new Map<string, ProviderDriver>();
@@ -19,8 +19,8 @@ export function buildRegistry(): ReadonlyMap<string, ProviderDriver> {
   registry.set("vercel", vercelProvider);
   registry.set("neon", neonProvider);
   registry.set("local", localProvider);
-  if (process.env["BAHAMA_ENABLE_FAKE"] === "1") {
-    registry.set("fake", fakeProvider);
+  if (process.env["BAHAMA_ENABLE_TEST"] === "1") {
+    registry.set("test", testProvider);
   }
   return registry;
 }

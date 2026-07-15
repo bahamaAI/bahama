@@ -1,8 +1,8 @@
 {
-  "name": "@bahama-ai/core",
-  "version": "0.1.0-alpha.1",
+  "name": "@bahama/core",
+  "version": "0.1.0-alpha.2",
   "private": true,
-  "description": "Bahama's internal plan, execution, state, and secret engine. Bundled into @bahama-ai/cli and not published separately.",
+  "description": "Bahama's internal plan, execution, state, and secret engine. Bundled into bahama and not published separately.",
   "license": "MIT",
   "type": "module",
   "files": [
@@ -21,7 +21,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@bahama-ai/provider-kit": "0.1.0-alpha.1",
+    "@bahama/provider-kit": "0.1.0-alpha.2",
     "execa": "^9.6.0",
     "semver": "^7.7.0",
     "yaml": "^2.8.0",

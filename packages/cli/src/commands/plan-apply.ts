@@ -1,5 +1,5 @@
-import type { JsonObject } from "@bahama-ai/provider-kit";
-import { applyPlan, loadManifest } from "@bahama-ai/core";
+import type { JsonObject } from "@bahama/provider-kit";
+import { applyPlan, loadManifest } from "@bahama/core";
 import { compileAndDescribe } from "../plan-shared.js";
 import { buildEngine, buildRegistry, emit, envelope, type EmitOptions } from "../runtime.js";
 

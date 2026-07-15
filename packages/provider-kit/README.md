@@ -18,7 +18,7 @@ Providers remain independent. A Neon provider produces a capability such as `con
 ## Provider shape
 
 ```ts
-import { defineProvider } from "@bahama-ai/provider-kit";
+import { defineProvider } from "@bahama/provider-kit";
 import { z } from "zod";
 
 export const exampleProvider = defineProvider({
@@ -81,7 +81,7 @@ export const exampleProvider = defineProvider({
 });
 ```
 
-This illustrates the contract shape, not a complete provider. Use the repository's [fake provider](https://github.com/bahamaAI/bahama/tree/main/providers/fake) as the executable reference implementation.
+This illustrates the contract shape, not a complete provider. Use the repository's [test provider](https://github.com/bahamaAI/bahama/tree/main/providers/test) as the executable reference implementation.
 
 ## The four driver verbs
 
@@ -147,12 +147,12 @@ Provider-kit development takes place in the [Bahama monorepo](https://github.com
 
 ```bash
 npm install
-npm run build -w @bahama-ai/provider-kit
+npm run build -w @bahama/provider-kit
 npm test
 npm run lint
 ```
 
-Contract changes require fake-provider coverage and verification of every affected official provider.
+Contract changes require test-provider coverage and verification of every affected official provider.
 
 ## License
 

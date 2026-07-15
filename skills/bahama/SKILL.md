@@ -1,9 +1,9 @@
 ---
-name: bahama-builder
+name: bahama
 description: Build, provision, test, package, and deploy web applications through Bahama, the agent-native infrastructure CLI. Use when creating, updating, or managing web apps whose infrastructure Bahama manages — on the managed Bahama Cloud or on the user's own provider accounts.
 ---
 
-# Bahama Builder
+# Bahama
 
 Bahama is agent-native application infrastructure. The agent writes declarative intent in `bahama.yaml`; the `bahama` CLI compiles that intent into a deterministic, reviewable plan and executes it with verified postconditions. Use the Bahama CLI as the system of action. Do not call infrastructure provider APIs directly for normal Bahama workflows.
 
@@ -166,7 +166,7 @@ If adding provider keys, OAuth client secrets, webhook signing secrets, or local
 
 ## Local Testing Rule
 
-Bahama Cloud local testing can use live managed resources through dev tokens and `@bahama-ai/cloud-sdk/server`. Dev tokens and secret values are server-side local configuration only.
+Bahama Cloud local testing can use live managed resources through dev tokens and `bahama-runtime/server`. Dev tokens and secret values are server-side local configuration only.
 
 If setting up local Hono development, local database access, Vite API proxying, or `.env.local`, read `references/local-development.md`.
 
@@ -203,5 +203,5 @@ Read `references/packaging-and-deploy.md` before deploying or troubleshooting de
 - `references/hono-api.md`: Read for backend-only Hono API deployments.
 - `references/database-and-sql.md`: Read before adding SQL, migrations, seed data, or persistent CRUD.
 - `references/secrets.md`: Read before using server-side provider credentials or local secret values.
-- `references/local-development.md`: Read before using dev tokens, `@bahama-ai/cloud-sdk`, `.env.local`, or local Hono/Vite API proxying.
+- `references/local-development.md`: Read before using dev tokens, `bahama-runtime`, `.env.local`, or local Hono/Vite API proxying.
 - `references/packaging-and-deploy.md`: Read before deploying or troubleshooting deploy failures.

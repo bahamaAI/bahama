@@ -1,5 +1,5 @@
-import type { JsonObject, PlanOperation, ResultEnvelope } from "@bahama-ai/provider-kit";
-import { compilePlan, savePlan, type PlanDocument } from "@bahama-ai/core";
+import type { JsonObject, PlanOperation, ResultEnvelope } from "@bahama/provider-kit";
+import { compilePlan, savePlan, type PlanDocument } from "@bahama/core";
 import { buildEngine, buildRegistry, envelope } from "./runtime.js";
 
 export interface CompiledPlanResult {

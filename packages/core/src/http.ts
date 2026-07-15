@@ -1,4 +1,4 @@
-import type { HttpClient, HttpRequest, HttpResponse } from "@bahama-ai/provider-kit";
+import type { HttpClient, HttpRequest, HttpResponse } from "@bahama/provider-kit";
 import type { Redactor } from "./redact.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;

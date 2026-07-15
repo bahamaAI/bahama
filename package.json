@@ -1,7 +1,7 @@
 {
   "name": "bahama-monorepo",
   "private": true,
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Bahama: open, agent-native application infrastructure. Declarative intent in, deterministic provider operations out.",
   "license": "MIT",
   "type": "module",

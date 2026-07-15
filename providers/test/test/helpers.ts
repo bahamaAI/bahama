@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, writeFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JsonObject, ProviderDriver } from "@bahama-ai/provider-kit";
+import type { JsonObject, ProviderDriver } from "@bahama/provider-kit";
 import {
   Engine,
   applyPlan,
@@ -9,12 +9,12 @@ import {
   savePlan,
   type ApplyOutcome,
   type PlanOutcome,
-} from "@bahama-ai/core";
-import { fakeProvider } from "../src/index.js";
+} from "@bahama/core";
+import { testProvider } from "../src/index.js";
 
-export const REGISTRY: ReadonlyMap<string, ProviderDriver> = new Map([["fake", fakeProvider]]);
+export const REGISTRY: ReadonlyMap<string, ProviderDriver> = new Map([["test", testProvider]]);
 
-/** A scratch project with a fake-provider manifest. */
+/** A scratch project with a test-provider manifest. */
 export async function makeProject(options?: {
   simulate?: JsonObject;
   withDatabase?: boolean;
@@ -27,15 +27,15 @@ export async function makeProject(options?: {
     "project:",
     "  name: test-app",
     "application:",
-    "  provider: fake",
-    "  framework: fake-framework",
+    "  provider: test",
+    "  framework: test-framework",
     `  config:${simulate || " {}"}`,
     ...(withDatabase
       ? [
           "resources:",
           "  database:",
-          "    provider: fake",
-          "    engine: fakedb",
+          "    provider: test",
+          "    engine: testdb",
           "bindings:",
           "  DATABASE_URL:",
           "    from: resources.database.connectionUrl",
@@ -108,8 +108,8 @@ export async function persistedState(root: string): Promise<string> {
   return chunks.join("\n");
 }
 
-export async function fakeLiveState(root: string): Promise<{
+export async function testLiveState(root: string): Promise<{
   resources: Record<string, { id: string; deployments: number; envVars: Record<string, string> }>;
 }> {
-  return JSON.parse(await readFile(join(root, ".fake-live.json"), "utf8"));
+  return JSON.parse(await readFile(join(root, ".test-live.json"), "utf8"));
 }

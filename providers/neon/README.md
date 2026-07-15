@@ -26,8 +26,8 @@ The [descriptor](./src/index.ts) is the authoritative agent-facing capability de
 
 ```bash
 npx vitest run providers/neon
-npm run build -w @bahama-ai/provider-neon
+npm run build -w @bahama/provider-neon
 npm run lint
 ```
 
-This provider is bundled with `@bahama-ai/cli` and is not published separately.
+This provider is bundled with `bahama` and is not published separately.

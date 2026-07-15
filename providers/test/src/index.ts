@@ -14,7 +14,7 @@ import {
   type ProbeResult,
   type ProviderContext,
   type StepOutcome,
-} from "@bahama-ai/provider-kit";
+} from "@bahama/provider-kit";
 
 /**
  * The contract-test provider. It behaves like a real provider — durable
@@ -23,7 +23,7 @@ import {
  * of the resource config, so tests can stage installation gaps, auth gaps,
  * multiple accounts, and mid-apply failures deterministically.
  *
- * "Live provider state" is a JSON file at `.fake-live.json` in the project
+ * "Live provider state" is a JSON file at `.test-live.json` in the project
  * root (it stands in for the remote provider, so tests can also mutate it to
  * simulate drift). Failure injections are consumed ON USE and persist across
  * processes, which is what makes resume tests honest.
@@ -57,7 +57,7 @@ interface LiveState {
 }
 
 function statePath(root: string): string {
-  return join(root, ".fake-live.json");
+  return join(root, ".test-live.json");
 }
 
 function loadState(root: string): LiveState {
@@ -80,26 +80,26 @@ function simulateOf(req: ProbeRequest): z.infer<typeof simulateSchema> {
 
 function deterministicSecret(root: string, resourceKey: string): string {
   const seed = createHash("sha256").update(`${root}:${resourceKey}`).digest("hex").slice(0, 24);
-  return `fakedb://user:${seed}@db.fake.internal/${resourceKey}`;
+  return `testdb://user:${seed}@db.test.invalid/${resourceKey}`;
 }
 
-export const fakeProvider = defineProvider({
+export const testProvider = defineProvider({
   descriptor: {
-    id: "fake",
-    name: "Fake Provider",
+    id: "test",
+    name: "Test Provider",
     roles: ["environment", "application", "database"],
     description: "Deterministic in-repo provider used by the contract test suite.",
     useWhen: "Never in real projects; contract tests only.",
     avoidWhen: "Always, outside tests.",
     requirements: [],
-    frameworks: ["fake-framework"],
-    engines: ["fakedb"],
+    frameworks: ["test-framework"],
+    engines: ["testdb"],
     produces: [
-      { capability: "connectionUrl", secret: true, description: "Fake database connection string." },
-      { capability: "productionUrl", secret: false, description: "Fake deployed application URL." },
+      { capability: "connectionUrl", secret: true, description: "Test database connection string." },
+      { capability: "productionUrl", secret: false, description: "Test deployed application URL." },
     ],
     consumes: [
-      { capability: "variables", secret: false, description: "Environment variables of the fake app." },
+      { capability: "variables", secret: false, description: "Environment variables of the test app." },
       { capability: "productionEnvironment", secret: false, description: "Legacy app environment variables." },
     ],
   },
@@ -110,8 +110,8 @@ export const fakeProvider = defineProvider({
     const simulate = simulateOf(req);
     if (simulate.toolMissing) {
       return {
-        tool: { installed: false, installHint: "npm i -g fake-cli" },
-        auth: { state: "unauthenticated", loginHint: "bahama auth login fake" },
+        tool: { installed: false, installHint: "npm i -g test-cli" },
+        auth: { state: "unauthenticated", loginHint: "bahama auth login test" },
         accounts: [],
         observed: {},
       };
@@ -119,7 +119,7 @@ export const fakeProvider = defineProvider({
     if (simulate.unauthenticated) {
       return {
         tool: { installed: true, version: "1.0.0", compatibility: "tested" },
-        auth: { state: "unauthenticated", loginHint: "bahama auth login fake" },
+        auth: { state: "unauthenticated", loginHint: "bahama auth login test" },
         accounts: [],
         observed: {},
       };
@@ -150,9 +150,9 @@ export const fakeProvider = defineProvider({
         decisions: [
           {
             kind: "decision",
-            id: "fake-account",
-            providerId: "fake",
-            question: "Multiple fake accounts are available. Which one should own these resources?",
+            id: "test-account",
+            providerId: "test",
+            question: "Multiple test accounts are available. Which one should own these resources?",
             options: accounts.map((id) => ({ id, label: id })),
             writeBack: "application.config.simulate.account",
           },
@@ -169,7 +169,7 @@ export const fakeProvider = defineProvider({
       if (intent.role === "database") {
         steps.push({
           id: `${intent.resourceKey}-ensure`,
-          action: "fake.database.ensure",
+          action: "test.database.ensure",
           summary: ensureSummary("database", intent.resourceKey, exists, lockHasIdentity(req, intent.resourceKey)),
           resourceKey: intent.resourceKey,
           effects: ensureEffects(exists, lockHasIdentity(req, intent.resourceKey)),
@@ -179,7 +179,7 @@ export const fakeProvider = defineProvider({
       } else {
         steps.push({
           id: `${intent.resourceKey}-ensure`,
-          action: "fake.app.ensure",
+          action: "test.app.ensure",
           summary: ensureSummary("app", intent.resourceKey, exists, lockHasIdentity(req, intent.resourceKey)),
           resourceKey: intent.resourceKey,
           effects: ensureEffects(exists, lockHasIdentity(req, intent.resourceKey)),
@@ -192,8 +192,8 @@ export const fakeProvider = defineProvider({
           const toAddress = formatCapabilityAddress(edge.to);
           steps.push({
             id: `${intent.resourceKey}-env-${edge.name.toLowerCase()}`,
-            action: "fake.env.set",
-            summary: `Transfer ${edge.name} to the fake app environment`,
+            action: "test.env.set",
+            summary: `Transfer ${edge.name} to the test app environment`,
             resourceKey: intent.resourceKey,
             effects: { transfersSecret: edge.secret },
             consumes: [fromAddress],
@@ -208,8 +208,8 @@ export const fakeProvider = defineProvider({
           .map((b) => `${intent.resourceKey}-env-${b.name.toLowerCase()}`);
         if (operation.kind === "deploy" && operation.environment === (intent.environment ?? "production")) steps.push({
           id: `${intent.resourceKey}-deploy`,
-          action: "fake.app.deploy",
-          summary: `Deploy \`${intent.resourceKey}\` to fake production`,
+          action: "test.app.deploy",
+          summary: `Deploy \`${intent.resourceKey}\` to test production`,
           resourceKey: intent.resourceKey,
           effects: { deploys: true },
           dependsOn: [`${intent.resourceKey}-ensure`, ...envSteps],
@@ -218,7 +218,7 @@ export const fakeProvider = defineProvider({
         });
         if (operation.kind === "deploy" && operation.environment === (intent.environment ?? "production")) steps.push({
           id: `${intent.resourceKey}-verify`,
-          action: "fake.app.verify",
+          action: "test.app.verify",
           summary: `Verify \`${intent.resourceKey}\` responds in production`,
           resourceKey: intent.resourceKey,
           effects: { readOnly: true },
@@ -256,10 +256,10 @@ export const fakeProvider = defineProvider({
     const resourceKey = step.resourceKey ?? "application";
 
     switch (step.action) {
-      case "fake.database.ensure": {
+      case "test.database.ensure": {
         const existing = state.resources[resourceKey];
         const resource = existing ?? {
-          id: `fakedb_${resourceKey}`,
+          id: `testdb_${resourceKey}`,
           kind: "database",
           deployments: 0,
           envVars: {},
@@ -276,9 +276,9 @@ export const fakeProvider = defineProvider({
           receipt: { existed: Boolean(existing) },
         };
       }
-      case "fake.app.ensure": {
+      case "test.app.ensure": {
         const existing = state.resources[resourceKey];
-        const resource = existing ?? { id: `fakeapp_${resourceKey}`, kind: "app", deployments: 0, envVars: {} };
+        const resource = existing ?? { id: `testapp_${resourceKey}`, kind: "app", deployments: 0, envVars: {} };
         state.resources[resourceKey] = resource;
         saveState(ctx.projectRoot, state);
         return {
@@ -288,7 +288,7 @@ export const fakeProvider = defineProvider({
           receipt: { existed: Boolean(existing) },
         };
       }
-      case "fake.env.set": {
+      case "test.env.set": {
         const resource = state.resources[resourceKey];
         if (!resource) {
           return { status: "failed", postconditionVerified: false, error: { message: "App does not exist." } };
@@ -301,7 +301,7 @@ export const fakeProvider = defineProvider({
         if (isSecretRef(consumed)) {
           // Sealed secret: store only material derived via broker use.
           await ctx.secrets.use(consumed, async (raw) => {
-            resource.envVars[name] = raw; // the fake "remote" side; never journaled
+            resource.envVars[name] = raw; // the test "remote" side; never journaled
             return null;
           });
         } else {
@@ -314,7 +314,7 @@ export const fakeProvider = defineProvider({
           receipt: { name, destination: step.inputs?.["bindingTo"] ?? null },
         };
       }
-      case "fake.app.deploy": {
+      case "test.app.deploy": {
         const resource = state.resources[resourceKey];
         if (!resource) {
           return { status: "failed", postconditionVerified: false, error: { message: "App does not exist." } };
@@ -324,11 +324,11 @@ export const fakeProvider = defineProvider({
         return {
           status: "succeeded",
           postconditionVerified: true,
-          produced: { productionUrl: `https://${resource.id}.fake.app` },
+          produced: { productionUrl: `https://${resource.id}.test.invalid` },
           receipt: { deployment: resource.deployments },
         };
       }
-      case "fake.app.verify": {
+      case "test.app.verify": {
         const resource = state.resources[resourceKey];
         const healthy = Boolean(resource && resource.deployments > 0);
         return {
@@ -341,7 +341,7 @@ export const fakeProvider = defineProvider({
         return {
           status: "failed",
           postconditionVerified: false,
-          error: { message: `Unknown fake action ${step.action}` },
+          error: { message: `Unknown test action ${step.action}` },
         };
     }
   },
@@ -389,9 +389,9 @@ function ensureEffects(exists: boolean, locked: boolean): ContributedStep["effec
 }
 
 function ensureSummary(kind: string, resourceKey: string, exists: boolean, locked: boolean): string {
-  if (!exists) return `Create the fake ${kind} \`${resourceKey}\``;
-  if (!locked) return `Adopt the existing fake ${kind} \`${resourceKey}\``;
-  return `Verify the fake ${kind} \`${resourceKey}\` still exists`;
+  if (!exists) return `Create the test ${kind} \`${resourceKey}\``;
+  if (!locked) return `Adopt the existing test ${kind} \`${resourceKey}\``;
+  return `Verify the test ${kind} \`${resourceKey}\` still exists`;
 }
 
 /** failOnce lives in the step's own resource config, carried via inputs at plan time. */

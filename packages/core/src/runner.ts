@@ -1,7 +1,7 @@
 import { execa, ExecaError } from "execa";
 import { access, constants } from "node:fs/promises";
 import { delimiter, join } from "node:path";
-import type { RunOptions, RunResult, SecretRef, SubprocessRunner } from "@bahama-ai/provider-kit";
+import type { RunOptions, RunResult, SecretRef, SubprocessRunner } from "@bahama/provider-kit";
 import type { InMemorySecretBroker } from "./secret-broker.js";
 import type { Redactor } from "./redact.js";
 

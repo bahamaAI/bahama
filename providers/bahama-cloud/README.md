@@ -19,14 +19,14 @@ The [descriptor](./src/index.ts) is the authoritative agent-facing capability de
 
 - [Bahama Cloud provider guide](https://www.bahama.ai/docs/providers/bahama-cloud)
 - [Local development](https://www.bahama.ai/docs/guides/local-development)
-- [Cloud SDK](../../packages/cloud-sdk/README.md)
+- [Bahama Runtime](../../packages/runtime/README.md)
 
 ## Development
 
 ```bash
 npx vitest run providers/bahama-cloud
-npm run build -w @bahama-ai/provider-bahama-cloud
+npm run build -w @bahama/provider-bahama-cloud
 npm run lint
 ```
 
-This provider is bundled with `@bahama-ai/cli` and is not published separately.
+This provider is bundled with `bahama` and is not published separately.

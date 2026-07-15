@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { configDir } from "@bahama-ai/core";
+import { configDir } from "@bahama/core";
 
 /**
  * Bahama Cloud OAuth (Authorization Code + PKCE) for the CLI, against the

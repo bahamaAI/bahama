@@ -15,13 +15,13 @@ This public repository must work without private sibling repositories. The Baham
 - `packages/provider-kit` — provider contract and injected execution context.
 - `packages/core` — internal planning, approval, execution, state, and secret engine.
 - `packages/cli` — the published `bahama` binary, provider registry, auth, and rendering.
-- `packages/cloud-sdk` — published server-side runtime bridge for native and local Bahama Cloud resources.
+- `packages/runtime` — published server-side runtime bridge for native and local Bahama Cloud resources.
 - `providers/bahama-cloud` — managed static, Vite, Hono, and D1 support.
 - `providers/vercel` — Vercel application environments through its official CLI.
 - `providers/neon` — Neon Postgres and checked-in SQL migrations.
 - `providers/local` — protected local environment-file bindings.
-- `providers/fake` — deterministic contract-test provider; enabled only by `BAHAMA_ENABLE_FAKE=1`.
-- `skills/bahama-builder` — operating guide for user-facing coding agents; its prose is product behavior.
+- `providers/test` — deterministic contract-test provider; enabled only by `BAHAMA_ENABLE_TEST=1`.
+- `skills/bahama` — operating guide for user-facing coding agents; its prose is product behavior.
 
 ## Architecture rules
 
@@ -29,9 +29,9 @@ This public repository must work without private sibling repositories. The Baham
 - Providers import only `provider-kit`, never core, CLI, or another provider.
 - Providers connect through capabilities and bindings, never pairwise integration code.
 - Core contains no provider-specific behavior. Official providers are registered statically in CLI.
-- SDK is a runtime leaf: no dependency on CLI, core, provider-kit, or providers.
+- The runtime package is a leaf: no dependency on CLI, core, provider-kit, or providers.
 
-The npm surface is intentionally small: `@bahama-ai/cli` and `@bahama-ai/cloud-sdk`. The CLI artifact bundles core, provider-kit, and the official providers, while those components remain separate npm-private workspaces in this public repository. Do not make an internal workspace publishable merely to satisfy a build import; change the CLI bundle instead.
+The npm surface is intentionally small: `bahama` and `bahama-runtime`. Internal workspaces use the private `@bahama/*` namespace for source composition only. The CLI artifact bundles core, provider-kit, and the official providers; do not make an internal workspace publishable merely to satisfy a build import.
 
 ## Project state
 
@@ -72,7 +72,7 @@ The npm surface is intentionally small: `@bahama-ai/cli` and `@bahama-ai/cloud-s
 
 ## Change checklist
 
-- `provider-kit` changes require contract review, fake coverage, and affected-provider tests.
+- `provider-kit` changes require contract review, test coverage, and affected-provider tests.
 - Behavior changes require a regression test; behavior-preserving refactors do not need ceremonial tests.
 - Provider changes keep tests, descriptor prose, capabilities, and the skill synchronized.
 - CLI workflow changes cover both JSON envelopes and human rendering, and update the skill when agent behavior changes.
@@ -91,4 +91,4 @@ npm run typecheck
 npm run lint
 ```
 
-Use focused tests while iterating, then run the full relevant suite. For end-to-end checks without live accounts, use the fake provider (`BAHAMA_ENABLE_FAKE=1`; see README → Contributing). Live-provider tests may create billable resources and require explicit authorization.
+Use focused tests while iterating, then run the full relevant suite. For end-to-end checks without live accounts, use the internal test provider (`BAHAMA_ENABLE_TEST=1`; see `providers/test/README.md`). Live-provider tests may create billable resources and require explicit authorization.

@@ -1,6 +1,6 @@
 import { access, appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { MANIFEST_FILENAME, validateManifest } from "@bahama-ai/core";
+import { MANIFEST_FILENAME, validateManifest } from "@bahama/core";
 import { UsageError, buildRegistry, emit, envelope, type EmitOptions } from "../runtime.js";
 
 export interface InitOptions {

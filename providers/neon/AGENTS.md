@@ -13,5 +13,5 @@ Verify with:
 
 ```bash
 npx vitest run providers/neon
-npm run build -w @bahama-ai/provider-neon
+npm run build -w @bahama/provider-neon
 ```

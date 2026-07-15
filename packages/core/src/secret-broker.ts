@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SecretBroker, SecretRef } from "@bahama-ai/provider-kit";
+import type { SecretBroker, SecretRef } from "@bahama/provider-kit";
 import { sha256Hex } from "./hash.js";
 import type { Redactor } from "./redact.js";
 

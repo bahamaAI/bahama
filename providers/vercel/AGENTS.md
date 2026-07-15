@@ -13,5 +13,5 @@ Verify with:
 
 ```bash
 npx vitest run providers/vercel
-npm run build -w @bahama-ai/provider-vercel
+npm run build -w @bahama/provider-vercel
 ```

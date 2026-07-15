@@ -11,5 +11,5 @@ Verify with:
 
 ```bash
 npx vitest run providers/local packages/cli
-npm run build -w @bahama-ai/provider-local
+npm run build -w @bahama/provider-local
 ```

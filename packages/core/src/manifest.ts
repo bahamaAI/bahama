@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
-import type { CapabilityAddress, JsonObject, JsonValue } from "@bahama-ai/provider-kit";
+import type { CapabilityAddress, JsonObject, JsonValue } from "@bahama/provider-kit";
 import { hashJson } from "./hash.js";
 
 export const MANIFEST_FILENAME = "bahama.yaml";

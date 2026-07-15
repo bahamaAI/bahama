@@ -1,4 +1,4 @@
-import type { CredentialSource, JsonObject, Logger, ProviderContext } from "@bahama-ai/provider-kit";
+import type { CredentialSource, JsonObject, Logger, ProviderContext } from "@bahama/provider-kit";
 import { RedactingHttpClient } from "./http.js";
 import { Redactor } from "./redact.js";
 import { SafeRunner } from "./runner.js";

@@ -27,7 +27,7 @@ The project must include:
 - `src/`
 - Vite dependency
 - Hono dependency
-- `@bahama-ai/cloud-sdk` dependency when using Bahama database types, `getDb`, or local database testing
+- `bahama-runtime` dependency when using Bahama database types, `getDb`, or local database testing
 - build script
 - deployable backend entry at `server/index.ts`, `server/index.js`, `server/index.mts`, or `server/index.tsx`
 
@@ -71,7 +71,7 @@ Bahama serves the Vite build output as static assets and routes `/api/*` through
 Keep browser code as browser code.
 
 - Call backend routes with relative paths like `/api/notes`, `/api/message`, or `/api/generate`.
-- Do not import server-only SDKs from frontend files.
+- Do not import server-only runtime packages from frontend files.
 - Do not read `env.DB`, `env.SECRET_NAME`, `BAHAMA_DEV_TOKEN`, or any private token from browser code.
 - Do not put private keys in `VITE_*` variables.
 - Handle API errors explicitly in the UI; do not assume every response is JSON success.
@@ -115,7 +115,7 @@ Minimal deployable Hono entry:
 
 ```ts
 import {Hono} from "hono";
-import type {BahamaDatabase} from "@bahama-ai/cloud-sdk/server";
+import type {BahamaDatabase} from "bahama-runtime/server";
 
 type Env = {
   Bindings: {

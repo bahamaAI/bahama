@@ -21,7 +21,7 @@ import {
   type SecretRef,
   type StatusReport,
   type StepOutcome,
-} from "@bahama-ai/provider-kit";
+} from "@bahama/provider-kit";
 
 /**
  * Bahama Cloud driver: talks to the hosted control plane over REST with an
@@ -368,7 +368,7 @@ const EXCLUDED_DIRS = new Set(["node_modules", ".git", ".bahama", "__MACOSX"]);
 // for static-site the archive root is SERVED, so anything included here
 // becomes a public URL.
 const EXCLUDED_FILES = new Set([
-  ".fake-live.json",
+  ".test-live.json",
   "bahama.yaml",
   "bahama.lock",
   ".DS_Store",
@@ -725,8 +725,8 @@ export const bahamaCloudProvider = defineProvider({
     produces: [
       { capability: "productionUrl", secret: false, description: "Public URL of the deployed application." },
       { capability: "developmentApiBaseUrl", secret: false, description: "Bahama development API origin." },
-      { capability: "developmentProjectSlug", secret: false, description: "Bahama project slug used by the local SDK." },
-      { capability: "developmentToken", secret: true, description: "Scoped token used by the Bahama SDK during local development." },
+      { capability: "developmentProjectSlug", secret: false, description: "Bahama project slug used by the local runtime bridge." },
+      { capability: "developmentToken", secret: true, description: "Scoped token used by bahama-runtime during local development." },
     ],
     // D1 is an in-runtime Worker binding (`env.DB`), never a connection
     // string — the database resource produces nothing bindable in v0.1.

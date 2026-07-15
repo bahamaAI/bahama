@@ -1,4 +1,4 @@
-import type { BindingEdge, ContributedStep, StepClassification } from "@bahama-ai/provider-kit";
+import type { BindingEdge, ContributedStep, StepClassification } from "@bahama/provider-kit";
 import type { Lockfile } from "./lockfile.js";
 
 /**

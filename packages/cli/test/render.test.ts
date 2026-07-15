@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ResultEnvelope } from "@bahama-ai/provider-kit";
+import type { ResultEnvelope } from "@bahama/provider-kit";
 import { renderHuman } from "../src/render.js";
 
 describe("human rendering", () => {

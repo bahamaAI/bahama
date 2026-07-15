@@ -19,11 +19,11 @@ Do not ask the user for a database URL, host, password, username, or connection 
 
 In deployed Worker/Hono code, the database is usually available as `env.DB`.
 
-For code that also needs local testing through Bahama's dev proxy, prefer `@bahama-ai/cloud-sdk/server` and `getDb(c.env)`. See `local-development.md` for details.
+For code that also needs local testing through Bahama's dev proxy, prefer `bahama-runtime/server` and `getDb(c.env)`. See `local-development.md` for details.
 
 ```ts
 import {Hono} from "hono";
-import {getDb, type BahamaDatabase} from "@bahama-ai/cloud-sdk/server";
+import {getDb, type BahamaDatabase} from "bahama-runtime/server";
 
 type Env = {
   Bindings: {
@@ -50,12 +50,12 @@ export default app;
 
 If local testing is not needed, direct `c.env.DB` access is acceptable in deployable Hono code.
 
-Use the `BahamaDatabase` type exported by `@bahama-ai/cloud-sdk/server`. Do not install
+Use the `BahamaDatabase` type exported by `bahama-runtime/server`. Do not install
 provider-specific Worker type packages just to type Bahama's database binding.
 
 ## Schema Setup
 
-Create tables deliberately before relying on them in app routes. During development, run setup or migration SQL through the Bahama Cloud dev SDK with a dev token (see `local-development.md`) so schema changes are explicit and visible. Production provisioning changes go through `bahama plan` and an approved `bahama apply`.
+Create tables deliberately before relying on them in app routes. During development, run setup or migration SQL through `bahama-runtime` with a dev token (see `local-development.md`) so schema changes are explicit and visible. Production provisioning changes go through `bahama plan` and an approved `bahama apply`.
 
 For small prototypes, it is acceptable to add an idempotent setup helper that uses `CREATE TABLE IF NOT EXISTS` before reads or writes. Keep that helper narrow, safe to run repeatedly, and limited to the tables the route actually needs.
 
@@ -99,6 +99,6 @@ Frontend code must not:
 
 ## Safe Querying
 
-Use the dev-token-authenticated SDK path for setup checks, schema creation, seed data, or debugging when the user has authorized the operation. Remember that dev-token queries touch live project data.
+Use the dev-token-authenticated runtime path for setup checks, schema creation, seed data, or debugging when the user has authorized the operation. Remember that dev-token queries touch live project data.
 
 Be careful with destructive SQL. Ask before dropping tables, deleting broad data, or overwriting user records.
