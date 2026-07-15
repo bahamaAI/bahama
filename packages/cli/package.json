@@ -7,30 +7,36 @@
   "bin": {
     "bahama": "./dist/bin.js"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "files": [
-    "dist",
+    "dist/bin.js",
+    "dist/bin.js.LEGAL.txt",
     "LICENSE",
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b && node scripts/build.mjs",
+    "prepack": "npm run build"
   },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
+    "commander": "^12.1.0",
+    "execa": "^9.6.0",
+    "fflate": "^0.8.2",
+    "pg": "^8.16.0",
+    "semver": "^7.7.0",
+    "zod": "^3.25.0",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
     "@bahama-ai/core": "0.1.0-alpha.1",
     "@bahama-ai/provider-bahama-cloud": "0.1.0-alpha.1",
     "@bahama-ai/provider-fake": "0.1.0-alpha.1",
     "@bahama-ai/provider-kit": "0.1.0-alpha.1",
+    "@bahama-ai/provider-local": "0.1.0-alpha.1",
     "@bahama-ai/provider-neon": "0.1.0-alpha.1",
     "@bahama-ai/provider-vercel": "0.1.0-alpha.1",
-    "commander": "^12.1.0",
-    "yaml": "^2.8.0"
-  },
-  "devDependencies": {
-    "execa": "^9.6.0"
+    "esbuild": "^0.28.1"
   }
 }

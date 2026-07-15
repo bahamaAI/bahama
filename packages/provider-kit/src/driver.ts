@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import type { JsonObject, JsonValue } from "./json.js";
-import type { BindingEdge } from "./capabilities.js";
+import type { AppliedBinding, BindingEdge } from "./capabilities.js";
 import type { ProviderContext } from "./context.js";
 import type { ProviderDescriptor, ProviderRole } from "./descriptor.js";
 import type { SecretRef } from "./secrets.js";
@@ -15,9 +15,15 @@ export interface ResourceIntent {
   projectName?: string;
   framework?: string;
   engine?: string;
+  /** Environment name for hosting/local targets (for example `local` or `production`). */
+  environment?: string;
   /** Provider-specific config, already validated against `intentSchema`. */
   config: JsonObject;
 }
+
+export type PlanOperation =
+  | { kind: "reconcile" }
+  | { kind: "deploy"; environment: string };
 
 /** Durable identity previously resolved into `bahama.lock` for one resource. */
 export interface LockedIdentity {
@@ -29,10 +35,13 @@ export interface LockedIdentity {
 }
 
 export interface ProviderAccount {
+  /** Durable provider id recorded in the plan and lock. */
   id: string;
   label: string;
   /** e.g. `personal`, `team`, `org`. */
   kind?: string;
+  /** Non-secret manifest/CLI selector when it differs from the durable id. */
+  selector?: string;
 }
 
 export type ToolCompatibility = "tested" | "untested-newer" | "unsupported";
@@ -78,6 +87,10 @@ export interface PlanRequest {
   probe: ProbeResult;
   /** Binding edges that touch this provider's resources (either side). */
   bindings: BindingEdge[];
+  /** Exact binding edges already materialized successfully in the lock. */
+  appliedBindings?: AppliedBinding[];
+  /** Why the plan is being compiled. Providers must not deploy during reconcile. */
+  operation?: PlanOperation;
 }
 
 /** Values resolved from dependency steps at execution time. */
@@ -109,6 +122,15 @@ export interface StatusReport {
   resources: ResourceStatus[];
 }
 
+/** Official provider-CLI commands that Bahama may launch interactively. */
+export interface ProviderAuthCommands {
+  /** Executable candidates in preference order, e.g. ["neon", "neonctl"]. */
+  executables: string[];
+  loginArgs: string[];
+  /** Omit when the provider CLI has no supported logout command. */
+  logoutArgs?: string[];
+}
+
 /**
  * A Bahama provider driver. Four verbs, one discipline:
  *
@@ -121,6 +143,8 @@ export interface StatusReport {
  */
 export interface ProviderDriver {
   descriptor: ProviderDescriptor;
+  /** Optional interactive auth delegation; never used during probe/plan/apply. */
+  authCommands?: ProviderAuthCommands;
   /** Validates the provider-specific `config` block of each resource. */
   intentSchema: z.ZodType<JsonObject, z.ZodTypeDef, unknown>;
   probe(ctx: ProviderContext, req: ProbeRequest): Promise<ProbeResult>;

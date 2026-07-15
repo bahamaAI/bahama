@@ -3,6 +3,7 @@ import { Engine } from "@bahama-ai/core";
 import { bahamaCloudProvider } from "@bahama-ai/provider-bahama-cloud";
 import { fakeProvider } from "@bahama-ai/provider-fake";
 import { neonProvider } from "@bahama-ai/provider-neon";
+import { localProvider } from "@bahama-ai/provider-local";
 import { vercelProvider } from "@bahama-ai/provider-vercel";
 import { freshCloudToken } from "./cloud-auth.js";
 import { renderHuman } from "./render.js";
@@ -17,6 +18,7 @@ export function buildRegistry(): ReadonlyMap<string, ProviderDriver> {
   registry.set("bahama-cloud", bahamaCloudProvider);
   registry.set("vercel", vercelProvider);
   registry.set("neon", neonProvider);
+  registry.set("local", localProvider);
   if (process.env["BAHAMA_ENABLE_FAKE"] === "1") {
     registry.set("fake", fakeProvider);
   }

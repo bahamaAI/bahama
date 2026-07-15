@@ -1,10 +1,8 @@
 {
   "name": "@bahama-ai/provider-fake",
   "version": "0.1.0-alpha.1",
+  "private": true,
   "description": "Deterministic contract-test provider and reference driver implementation. Simulates a live provider (state file), installation/auth gaps, multiple accounts, and injected failures. Enabled in the CLI only with BAHAMA_ENABLE_FAKE=1.",
-  "publishConfig": {
-    "access": "public"
-  },
   "files": ["dist", "README.md"],
   "license": "MIT",
   "type": "module",

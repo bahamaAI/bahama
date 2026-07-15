@@ -24,6 +24,7 @@ const stepEffectsSchema = z
     transfersSecret: z.boolean().optional(),
     deploys: z.boolean().optional(),
     bindsAccount: z.boolean().optional(),
+    changesConfiguration: z.boolean().optional(),
     readOnly: z.boolean().optional(),
   })
   .strict();
@@ -52,12 +53,17 @@ const planDocumentSchema = z
     createdAt: z.string(),
     manifestHash: z.string(),
     lockHash: z.string(),
+    providerConfigFingerprints: z.record(z.string(), z.string()),
     accounts: z.record(
       z.string(),
       z.object({ id: z.string(), label: z.string(), kind: z.string().optional() }).strict(),
     ),
     steps: z.array(plannedStepSchema),
     warnings: z.array(z.string()),
+    operation: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("reconcile") }).strict(),
+      z.object({ kind: z.literal("deploy"), environment: z.string() }).strict(),
+    ]),
   })
   .strict();
 
@@ -70,8 +76,16 @@ const planDocumentSchema = z
  * derive the id through this one function so they cannot drift.
  */
 export function planContentId(plan: Omit<PlanDocument, "planId" | "createdAt">): string {
-  const { manifestHash, lockHash, accounts, steps, warnings } = plan;
-  return contentId("plan", { manifestHash, lockHash, accounts, steps, warnings } as unknown as JsonValue);
+  const { manifestHash, lockHash, providerConfigFingerprints, accounts, steps, warnings, operation } = plan;
+  return contentId("plan", {
+    manifestHash,
+    lockHash,
+    providerConfigFingerprints,
+    accounts,
+    steps,
+    warnings,
+    operation,
+  } as unknown as JsonValue);
 }
 
 export type LoadPlanResult =

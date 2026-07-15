@@ -23,6 +23,8 @@ export interface StepEffects {
   deploys?: boolean;
   /** Binds or changes a provider account/team/org. Always consequential. */
   bindsAccount?: boolean;
+  /** Changes provider-side runtime/build configuration. Always consequential. */
+  changesConfiguration?: boolean;
   /** Pure read/verify. Always routine. */
   readOnly?: boolean;
 }

@@ -77,17 +77,22 @@ export async function clearCloudToken(): Promise<boolean> {
  * expiry. The refresh path holds an exclusive lock because the server
  * rotates refresh tokens on use.
  */
-export async function freshCloudToken(): Promise<string | null> {
+export async function freshCloudToken(options: { forceRefresh?: boolean } = {}): Promise<string | null> {
   const current = await storedCloudToken();
   if (!current) return null;
-  if (Date.now() < current.expiresAt - 60_000) return current.accessToken;
+  if (!options.forceRefresh && Date.now() < current.expiresAt - 60_000) return current.accessToken;
   if (!current.refreshToken) return current.accessToken; // env token or non-refreshable
 
   return withRefreshLock(async () => {
     // Another process may have refreshed while we waited on the lock.
     const latest = await storedCloudToken();
     if (!latest) return null;
-    if (Date.now() < latest.expiresAt - 60_000 || !latest.refreshToken) return latest.accessToken;
+    if (!latest.refreshToken) return latest.accessToken;
+    // A concurrent process may have refreshed while this caller waited. Its
+    // new access token already satisfies a forced refresh; do not rotate the
+    // newly-issued refresh token a second time.
+    if (options.forceRefresh && latest.accessToken !== current.accessToken) return latest.accessToken;
+    if (!options.forceRefresh && Date.now() < latest.expiresAt - 60_000) return latest.accessToken;
 
     const endpoints = await discover();
     const response = await fetch(endpoints.token, {

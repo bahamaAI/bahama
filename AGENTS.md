@@ -1,71 +1,94 @@
-# AGENTS
+# AGENTS.md
 
-Concise coding guide for agents working in this repo. `README.md` has the product narrative; the wider Bahama ecosystem (control plane, deployer, SDK, business context) is mapped in `../bahama/PROJECT.md`.
+Coding guide for the Bahama monorepo. `README.md` explains the product and contribution workflow. Nested `AGENTS.md` files add package-specific rules.
 
-## What this repo is
+## Product boundary
 
-The open-source (MIT) Bahama monorepo: the `bahama` CLI and its plan/apply engine. Declarative intent in (`bahama.yaml`, written by the user's coding agent), deterministic verified provider operations out. The CLI contains no LLM and no provider ranking — **the model decides, the CLI executes.**
+Bahama turns a project's declarative intent (`bahama.yaml`) into deterministic, approved, verified provider operations; `README.md` tells the full product story.
 
-Related but *not* in this repo: the Bahama Cloud control plane (`../bahama`, Next.js — OAuth issuer, project APIs, deploy jobs), the sandbox build pipeline (`../sandbox-deployer`), and the runtime SDK (`../bahama-sdk`). The `bahama-cloud` provider here talks to the control plane over REST + OAuth only.
+**The model decides; Bahama executes.** Do not add an LLM, hidden provider ranking, or autonomous product choices to the CLI. Bahama Cloud is first-party, but it uses the same orchestration contract as every other provider.
 
-## Layout and dependency rules
+This public repository must work without private sibling repositories. The Bahama Cloud control plane and deployer are separate systems.
 
-```text
-packages/provider-kit   @bahama-ai/provider-kit — the PUBLIC provider contract
-packages/core           @bahama-ai/core — plan/execution/state/secret engine (published but internal; no API guarantee)
-packages/cli            @bahama-ai/cli — the `bahama` binary; owns the static provider registry
-providers/{fake,bahama-cloud,vercel,neon}   official drivers
-skills/bahama-builder   the operating guide installed into coding agents — treat its prose as code
-plugins/bahama          thin skill-delivery shell; registers NO MCP
-```
+## Monorepo map
 
-Hard rules: CLI → core → provider-kit; providers import provider-kit **only**. Core never imports a provider; providers never import each other. No dynamic provider loading. The `fake` provider only appears with `BAHAMA_ENABLE_FAKE=1`.
+- `packages/provider-kit` — provider contract and injected execution context.
+- `packages/core` — internal planning, approval, execution, state, and secret engine.
+- `packages/cli` — the published `bahama` binary, provider registry, auth, and rendering.
+- `packages/cloud-sdk` — published server-side runtime bridge for native and local Bahama Cloud resources.
+- `providers/bahama-cloud` — managed static, Vite, Hono, and D1 support.
+- `providers/vercel` — Vercel application environments through its official CLI.
+- `providers/neon` — Neon Postgres and checked-in SQL migrations.
+- `providers/local` — protected local environment-file bindings.
+- `providers/fake` — deterministic contract-test provider; enabled only by `BAHAMA_ENABLE_FAKE=1`.
+- `skills/bahama-builder` — operating guide for user-facing coding agents; its prose is product behavior.
 
-## State model (one home per fact)
+## Architecture rules
 
-- `bahama.yaml` — intent only. The validator is strict (unknown keys are errors) and **rejects ID-shaped keys** (`projectId:` → error pointing at the lock). Never write doc/test examples showing IDs or secrets in the manifest; agents pattern-match examples.
-- `bahama.lock` — committed; durable IDs, account ids, binding edges, repo fingerprint, driver-compat ranges. Schema forbids keys matching `url|token|secret|password|key|connection|credential` (the anti-tfstate guard). Never attributes, outputs, or labels.
-- `.bahama/` — gitignored; immutable plans (`plans/<id>.json`), the `operations.ndjson` receipt journal, the op lock.
-- Credentials — Vercel/Neon sessions live in *their own CLIs'* stores; Bahama Cloud tokens in a 0600 file in the OS config dir (or `BAHAMA_TOKEN`). Never in argv, never in any output.
+- Dependency direction is `cli -> core -> provider-kit`.
+- Providers import only `provider-kit`, never core, CLI, or another provider.
+- Providers connect through capabilities and bindings, never pairwise integration code.
+- Core contains no provider-specific behavior. Official providers are registered statically in CLI.
+- SDK is a runtime leaf: no dependency on CLI, core, provider-kit, or providers.
 
-## Invariants — do not weaken these
+The npm surface is intentionally small: `@bahama-ai/cli` and `@bahama-ai/cloud-sdk`. The CLI artifact bundles core, provider-kit, and the official providers, while those components remain separate npm-private workspaces in this public repository. Do not make an internal workspace publishable merely to satisfy a build import; change the CLI bundle instead.
 
-1. **Secrets are sealed at capture.** `SecretBroker.seal` registers the value with the redactor in the same act; `SafeRunner` seals captured stdout (`captureSecretStdout`) *before* any success/error path can observe it. No window where a raw secret exists unregistered.
-2. **Postcondition verification.** A step succeeds only when the driver verifies live state (`postconditionVerified`), never on exit code. Resume soundness depends on this.
-3. **Plans are content-addressed and re-verified.** `planContentId` hashes the whole document; `loadPlan` re-validates schema + hash. Approval covers bytes.
-4. **Classification is default-deny and centralized** (`core/src/classify.ts`). Routine = mutates no node/edge of the resource/binding graph and is reversible by a routine step. Unknown effects, effect-less mutations, first-time or rewired secret bindings, changed provider-config fingerprints → consequential. Providers declare effects; they don't classify. No "user asked for this" provenance flags — an agent would set them.
-5. **Probes never mutate; nothing ever waits on a TTY.** Missing tool/auth/decision → typed result envelope, exit 0. Interactive prompts break every agent host.
-6. **Drivers only get injected capabilities** (`ProviderContext`: runner, secret broker, optional `credentials.freshToken`). Never let a driver spawn processes or read token files directly.
-7. **One `ResultEnvelope` per command**; human and `--json` output render the same object. Exit codes: workflow states 0, provider failure 1, invalid invocation 2, internal 3.
+## Project state
 
-## Coding rules
+- `bahama.yaml` — committed user intent; never resolved IDs or secrets.
+- `bahama.lock` — committed CLI-owned identities and binding edges; never hand-edited.
+- `.bahama/` — gitignored plans, receipts, and operation locks.
+- Credentials — never in the repo; provider-owned stores or Bahama's protected store only. Local secret values exist only through an explicit `local` binding.
 
-- TypeScript strict, ESM, npm workspaces, tsc project references. Zod for all schemas (structural schemas `.strict()`), commander for the CLI, execa via `SafeRunner` only.
-- Everything crossing a contract boundary is plain JSON (`JsonValue`/`JsonObject`).
-- Error messages are agent UX: state what happened, then a concrete recovery command. Include validation issues in the message string (agents often read only `message`).
-- provider-kit is the public API — changes there are semver-relevant; core is published but explicitly guarantee-free.
-- New provider support = descriptor + intentSchema + four verbs + a driver test file mirroring the fake provider's contract properties. Update the skill's guidance in the same change.
-- If a behavior guarantee changes, `providers/fake/test/contract.test.ts` is the spec that must say so.
+## Safety invariants
+
+- `probe` and `plan` are read-only and non-interactive.
+- Plans are deterministic, content-addressed, and revalidated before apply.
+- Providers declare effects; core classifies them. Unknown mutations require approval.
+- A step succeeds only after its live postcondition is verified.
+- Resume applies only to unfinished work; a completed plan is not a permanent cache.
+- Never bypass approval, account choice, repository identity, plan integrity, operation locking, redaction, or verification.
+- Every command returns one `ResultEnvelope`; human and JSON output render the same result.
+
+## Security for contributors
+
+- Never commit credentials, private keys, tokens, connection strings, real user data, or unredacted provider responses.
+- Authorized live tests may use existing sessions or protected secrets. Keep values out of output, argv, chat, issues, and fixtures.
+- Providers use `ProviderContext` for external CLIs, HTTP, secrets, and credentials. They do not read credential files or spawn processes directly.
+- Secret values are sealed at capture and never enter manifests, plans, locks, receipts, journals, logs, errors, or status output.
+- Keep database access, provider credentials, development tokens, and native bindings server-side.
+- Treat manifests, provider responses, archives, paths, and repository contents as untrusted input.
+- Preserve schema checks, path containment, size limits, archive exclusions, and argument-array subprocesses.
+
+## Engineering conventions
+
+- TypeScript strict mode, ESM, npm workspaces, and project references.
+- Use Zod for untrusted input and serialized documents. Core leaves provider `config` open; each provider validates its own block.
+- Persisted and returned data must be JSON-compatible. Secret values travel only as non-serializable `SecretRef` handles at runtime.
+- Provider subprocesses go through `ctx.run`; never import `node:child_process` or `execa` in a provider.
+- Errors say what failed and give a real recovery action when one exists. Never invent commands.
+- Preserve unrelated user changes and avoid generated-file or formatting churn.
+- Do not hardcode test counts, dated readiness claims, or local machine paths in committed guidance.
+
+## Change checklist
+
+- `provider-kit` changes require contract review, fake coverage, and affected-provider tests.
+- Behavior changes require a regression test; behavior-preserving refactors do not need ceremonial tests.
+- Provider changes keep tests, descriptor prose, capabilities, and the skill synchronized.
+- CLI workflow changes cover both JSON envelopes and human rendering, and update the skill when agent behavior changes.
+- New frameworks and capabilities must work end to end: validation, planning, execution, verification, tests, provider prose, and skill guidance.
+- Do not edit generated `dist/`; builds recreate it and Git ignores it.
 
 ## Verification
 
+Node.js `20.19+`.
+
 ```bash
-npm run build    # tsc -b across workspaces
-npm test         # vitest — 102 tests, keep it green
+npm install
+npm run build        # focused: npm run build -w <package>
+npm test             # focused: npx vitest run <path>
+npm run typecheck
 npm run lint
 ```
 
-For hands-on end-to-end checks, drive the built binary against the fake provider in a scratch dir:
-
-```bash
-alias bahama='node <this-repo>/packages/cli/dist/bin.js'
-export BAHAMA_ENABLE_FAKE=1
-bahama init --name lab --application fake --framework fake-framework --database fake
-bahama plan && bahama apply <plan-id> --approved && bahama deploy
-```
-
-`.fake-live.json` is the simulated remote provider; the `simulate:` config block stages tool-missing/unauthenticated/multi-account/fail-once scenarios (see `providers/fake/src/index.ts`).
-
-## Status caveats (July 2026)
-
-The Vercel, Neon, and Bahama Cloud drivers pass their test suites against recorded response shapes but have **never been run against live accounts**. If a task involves those drivers, assume parse helpers may not match reality; fixes should land with a new recorded fixture in the driver's test file. The repo has no CI and is not yet published to npm or pushed to GitHub.
+Use focused tests while iterating, then run the full relevant suite. For end-to-end checks without live accounts, use the fake provider (`BAHAMA_ENABLE_FAKE=1`; see README → Contributing). Live-provider tests may create billable resources and require explicit authorization.

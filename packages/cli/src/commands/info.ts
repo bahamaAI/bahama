@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { JsonObject } from "@bahama-ai/provider-kit";
+import type { JsonObject, Requirement } from "@bahama-ai/provider-kit";
 import {
   LOCK_FILENAME,
   configPath,
@@ -31,6 +31,7 @@ export async function runInspect(projectRoot: string, emitOptions: EmitOptions):
 /** Environment and project health checks; each check is pass/fail with a fix hint. */
 export async function runDoctor(projectRoot: string, emitOptions: EmitOptions): Promise<never> {
   const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
+  const requirements: Requirement[] = [];
 
   const [major, minor] = process.versions.node.split(".").map(Number);
   const nodeOk = major! > 20 || (major === 20 && minor! >= 19);
@@ -54,7 +55,7 @@ export async function runDoctor(projectRoot: string, emitOptions: EmitOptions): 
     const manifest = await loadManifest(projectRoot);
     const engine = buildEngine(projectRoot);
     const providers = new Set([
-      manifest.application.provider,
+      ...Object.values(manifest.environments).map((environment) => environment.provider),
       ...Object.values(manifest.resources).map((r) => r.provider),
     ]);
     for (const providerId of providers) {
@@ -73,16 +74,44 @@ export async function runDoctor(projectRoot: string, emitOptions: EmitOptions): 
             ? `authenticated as ${probe.auth.identity ?? "unknown"}`
             : (probe.auth.loginHint ?? "not authenticated"),
       });
+      if (!probe.tool.installed) {
+        requirements.push({
+          kind: "installation",
+          providerId,
+          tool: providerId,
+          installHint: probe.tool.installHint ?? `Install the ${providerId} CLI`,
+        });
+      } else if (probe.auth.state !== "authenticated") {
+        requirements.push({
+          kind: "auth",
+          providerId,
+          loginHint: `bahama auth login ${providerId}`,
+          reason:
+            probe.auth.state === "expired"
+              ? "expired"
+              : probe.auth.state === "mismatch"
+                ? "mismatch"
+                : "missing",
+        });
+      }
     }
   }
 
   const failing = checks.filter((check) => !check.ok);
+  const status = requirements.some((requirement) => requirement.kind === "installation")
+    ? "installation_required"
+    : requirements.some((requirement) => requirement.kind === "auth")
+      ? "auth_required"
+      : failing.length > 0
+        ? "failed"
+        : "succeeded";
   emit(
     envelope(
       "doctor",
-      failing.length === 0 ? "succeeded" : "failed",
-      failing.length === 0 ? "All checks passed." : `${failing.length} check(s) failing.`,
+      status,
+      failing.length === 0 ? "All checks passed." : `${failing.length} check(s) need attention.`,
       { checks },
+      { requirements },
     ),
     emitOptions,
   );
@@ -140,10 +169,31 @@ export async function runProviders(
 }
 
 /** Clear resolved resource identity but keep intent — the fork/template escape hatch. */
-export async function runDetach(projectRoot: string, emitOptions: EmitOptions): Promise<never> {
+export async function runDetach(
+  projectRoot: string,
+  options: { approved: boolean },
+  emitOptions: EmitOptions,
+): Promise<never> {
   const lock = await loadLock(projectRoot);
   if (!lock) {
     emit(envelope("detach", "succeeded", "No bahama.lock present; nothing to detach.", {}), emitOptions);
+  }
+  const removedResources = Object.keys(lock.resources);
+  if (!options.approved) {
+    emit(
+      envelope(
+        "detach",
+        "approval_required",
+        "Detach forgets this stack's resolved provider identities. It deletes no remote resources, but the next plan may adopt or create replacements.",
+        { removedResources },
+        {
+          warnings: [
+            "Use detach only for an intentional fork/template reset. It is not the recovery path for a missing provider resource.",
+          ],
+        },
+      ),
+      emitOptions,
+    );
   }
   await rm(join(projectRoot, LOCK_FILENAME));
   emit(
@@ -151,7 +201,7 @@ export async function runDetach(projectRoot: string, emitOptions: EmitOptions): 
       "detach",
       "succeeded",
       "Removed bahama.lock. The manifest is unchanged; the next `bahama plan` resolves fresh resources under your accounts.",
-      { removedResources: Object.keys(lock!.resources) },
+      { removedResources },
     ),
     emitOptions,
   );
@@ -165,27 +215,46 @@ export async function runStatus(projectRoot: string, emitOptions: EmitOptions): 
 
   const resources: JsonObject[] = [];
   let materialDrift = 0;
-  const providers = new Map<string, string[]>();
-  providers.set(manifest.application.provider, ["application"]);
+  const providers = new Map<string, Array<{ resourceKey: string; role: "application" | "environment" | "database" | "service"; config: JsonObject; framework?: string; engine?: string }>>();
+  if (manifest.legacyApplication) {
+    providers.set(manifest.legacyApplication.provider, [{
+      resourceKey: "application",
+      role: "application",
+      config: manifest.legacyApplication.config ?? {},
+      ...(manifest.application?.framework ? { framework: manifest.application.framework } : {}),
+    }]);
+  }
+  for (const [name, environment] of Object.entries(manifest.environments)) {
+    if (manifest.legacyApplication) continue;
+    providers.set(environment.provider, [...(providers.get(environment.provider) ?? []), {
+      resourceKey: `environment.${name}`,
+      role: "environment",
+      config: environment.config ?? {},
+      ...(manifest.application?.framework ? { framework: manifest.application.framework } : {}),
+    }]);
+  }
   for (const [key, resource] of Object.entries(manifest.resources)) {
-    providers.set(resource.provider, [...(providers.get(resource.provider) ?? []), key]);
+    const descriptor = registry.get(resource.provider)?.descriptor;
+    const role = descriptor?.roles.includes("database") && (resource.engine || descriptor.engines) ? "database" : "service";
+    providers.set(resource.provider, [...(providers.get(resource.provider) ?? []), {
+      resourceKey: key,
+      role,
+      config: resource.config ?? {},
+      ...(resource.engine ? { engine: resource.engine } : {}),
+    }]);
   }
 
-  for (const [providerId, resourceKeys] of providers) {
+  for (const [providerId, intents] of providers) {
     const driver = registry.get(providerId);
     if (!driver) {
       resources.push({ provider: providerId, error: "not registered in this CLI build" });
       continue;
     }
     const report = await driver.status(engine.contextFor(providerId), {
-      intent: resourceKeys.map((resourceKey) => ({
-        resourceKey,
-        role: resourceKey === "application" ? "application" : "database",
-        config: {},
-      })),
-      locked: resourceKeys.flatMap((resourceKey) => {
-        const locked = lock?.resources[resourceKey];
-        return locked ? [{ resourceKey, identity: locked.identity }] : [];
+      intent: intents,
+      locked: intents.flatMap((intent) => {
+        const locked = lock?.resources[intent.resourceKey];
+        return locked ? [{ resourceKey: intent.resourceKey, identity: locked.identity }] : [];
       }),
     });
     for (const resource of report.resources) {

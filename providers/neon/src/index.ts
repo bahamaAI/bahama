@@ -247,7 +247,7 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
 
   let projectId: string | null = pinnedId;
   let existed = true;
-  let connectionFromCreate: string | null = null;
+  let connectionFromCreate: SecretRef | null = null;
 
   if (projectId) {
     const got = await ctx.run.run(bin, ["projects", "get", projectId, "--output", "json"]);
@@ -264,16 +264,25 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
     }
     projectId = parseProjectList(listed.stdout).find((p) => p.name === name)?.id ?? null;
     if (!projectId) {
-      const created = await ctx.run.run(bin, [
-        "projects",
-        "create",
-        "--name",
-        name,
-        ...(region ? ["--region-id", region] : []),
-        ...orgArgs,
-        "--output",
-        "json",
-      ]);
+      const created = await ctx.run.run(
+        bin,
+        [
+          "projects",
+          "create",
+          "--name",
+          name,
+          ...(region ? ["--region-id", region] : []),
+          ...orgArgs,
+          "--output",
+          "json",
+        ],
+        {
+          captureSecretJson: {
+            name: `${resourceKey}.connectionUrl`,
+            path: ["connection_uris", 0, "connection_uri"],
+          },
+        },
+      );
       if (created.exitCode !== 0) {
         return fail(`Creating Neon project \`${name}\` failed: ${errText(created.stderr, created.stdout)}`);
       }
@@ -281,12 +290,9 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
       if (!project) return fail("Neon project creation returned no parsable project id.");
       projectId = project.id;
       existed = false;
-      // `projects create --output json` already carries the connection URI;
-      // seal it immediately so no later diagnostics can echo it.
-      const uris = (parseJson(created.stdout) as { connection_uris?: Array<{ connection_uri?: unknown }> } | null)
-        ?.connection_uris;
-      const uri = uris?.[0]?.connection_uri;
-      if (typeof uri === "string" && uri !== "") connectionFromCreate = uri;
+      // The runner extracts and redacts connection_uris before this driver
+      // receives the otherwise-useful project metadata.
+      connectionFromCreate = created.secret ?? null;
     }
   }
 
@@ -294,7 +300,7 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
   // never place it in receipts, logs, or identity.
   let connectionRef: SecretRef;
   if (connectionFromCreate) {
-    connectionRef = ctx.secrets.seal(`${resourceKey}.connectionUrl`, connectionFromCreate.trim());
+    connectionRef = connectionFromCreate;
   } else {
     // captureSecretStdout seals INSIDE the runner, so the raw string never
     // reaches this driver — cs.stdout arrives already redacted.
@@ -309,11 +315,12 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
 
   const check = await ctx.run.run(bin, ["projects", "get", projectId, "--output", "json"]);
   const verified = check.exitCode === 0;
+  const verifiedProject = verified ? parseProject(check.stdout) : null;
   return {
     status: verified ? "succeeded" : "failed",
     postconditionVerified: verified,
     produced: { connectionUrl: connectionRef },
-    identity: { projectId },
+    identity: { projectId, name: verifiedProject?.name || name },
     receipt: { projectId, existed },
     ...(verified
       ? {}
@@ -413,6 +420,10 @@ async function applyMigrations(
 /* -------------------------------- driver --------------------------------- */
 
 export const neonProvider = defineProvider({
+  authCommands: {
+    executables: ["neon", "neonctl"],
+    loginArgs: ["auth"],
+  },
   descriptor: {
     id: PROVIDER_ID,
     name: "Neon",
@@ -473,20 +484,25 @@ export const neonProvider = defineProvider({
     const orgsRes = await ctx.run.run(bin, ["orgs", "list", "--output", "json"]);
     const accounts = orgsRes.exitCode === 0 ? parseOrgs(orgsRes.stdout) : [];
 
-    // Durable account: the selected org, else the personal user id.
+    // Neon project operations require an org id in current CLIs. An explicit
+    // config wins; a sole available org is deterministic and auto-selected;
+    // multiple orgs are resolved by the plan decision below.
     const orgConfig =
       req.intent
         .filter((intent) => intent.role === "database")
         .map((intent) => configString(intent.config, "org"))
         .find((value) => value !== null) ?? null;
-    let account: ProviderAccount | undefined;
-    if (orgConfig) {
-      account = accounts.find((entry) => entry.id === orgConfig) ?? {
-        id: orgConfig,
-        label: orgConfig,
-        kind: "org",
-      };
-    } else {
+    const selectedOrg = orgConfig
+      ? (accounts.find((entry) => entry.id === orgConfig) ?? {
+          id: orgConfig,
+          label: orgConfig,
+          kind: "org" as const,
+        })
+      : accounts.length === 1
+        ? accounts[0]
+        : undefined;
+    let account: ProviderAccount | undefined = selectedOrg;
+    if (!account && accounts.length === 0) {
       const userId = parseUserId(me.stdout);
       if (userId) account = { id: userId, label: identity, kind: "personal" };
     }
@@ -502,7 +518,7 @@ export const neonProvider = defineProvider({
         continue;
       }
       const name = resolveName(intent);
-      const orgId = configString(intent.config, "org");
+      const orgId = configString(intent.config, "org") ?? selectedOrg?.id ?? null;
       const listed = await ctx.run.run(bin, [
         "projects",
         "list",
@@ -533,7 +549,9 @@ export const neonProvider = defineProvider({
 
     for (const intent of req.intent) {
       if (intent.role !== "database") continue;
-      const orgId = configString(intent.config, "org");
+      const orgId =
+        configString(intent.config, "org") ??
+        (req.probe.auth.account?.kind === "org" ? req.probe.auth.account.id : null);
 
       if (req.probe.accounts.length > 1 && !orgId) {
         decisions.push({
@@ -558,7 +576,10 @@ export const neonProvider = defineProvider({
 
       const observed = req.probe.observed[intent.resourceKey] as JsonObject | undefined;
       const exists = observed?.["exists"] === true;
-      const pinnedId = lockedProjectId(req, intent.resourceKey);
+      const lockedId = lockedProjectId(req, intent.resourceKey);
+      // If probe confirmed the locked resource is gone, plan a replacement
+      // without leaking the stale id into execution.
+      const pinnedId = exists ? lockedId : null;
       const region = configString(intent.config, "region");
       const ensureId = `${intent.resourceKey}-ensure`;
 

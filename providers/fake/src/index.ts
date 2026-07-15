@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import {
   defineProvider,
+  formatCapabilityAddress,
   isSecretRef,
   type ContributedStep,
   type JsonObject,
@@ -86,7 +87,7 @@ export const fakeProvider = defineProvider({
   descriptor: {
     id: "fake",
     name: "Fake Provider",
-    roles: ["application", "database"],
+    roles: ["environment", "application", "database"],
     description: "Deterministic in-repo provider used by the contract test suite.",
     useWhen: "Never in real projects; contract tests only.",
     avoidWhen: "Always, outside tests.",
@@ -98,7 +99,8 @@ export const fakeProvider = defineProvider({
       { capability: "productionUrl", secret: false, description: "Fake deployed application URL." },
     ],
     consumes: [
-      { capability: "productionEnvironment", secret: false, description: "Environment variables of the fake app." },
+      { capability: "variables", secret: false, description: "Environment variables of the fake app." },
+      { capability: "productionEnvironment", secret: false, description: "Legacy app environment variables." },
     ],
   },
 
@@ -139,6 +141,7 @@ export const fakeProvider = defineProvider({
   },
 
   async plan(ctx: ProviderContext, req): Promise<PlanContribution> {
+    const operation = req.operation ?? { kind: "deploy" as const, environment: "production" };
     const simulate = simulateOf(req);
     const accounts = simulate.accounts ?? ["default-account"];
     if (accounts.length > 1 && !simulate.account) {
@@ -185,14 +188,8 @@ export const fakeProvider = defineProvider({
 
         // One env-transfer step per binding that lands on this application.
         for (const edge of req.bindings.filter((b) => b.to.resourceKey === intent.resourceKey)) {
-          const fromAddress =
-            edge.from.resourceKey === "application"
-              ? `application.${edge.from.capability}`
-              : `resources.${edge.from.resourceKey}.${edge.from.capability}`;
-          const toAddress =
-            edge.to.resourceKey === "application"
-              ? `application.${edge.to.capability}`
-              : `resources.${edge.to.resourceKey}.${edge.to.capability}`;
+          const fromAddress = formatCapabilityAddress(edge.from);
+          const toAddress = formatCapabilityAddress(edge.to);
           steps.push({
             id: `${intent.resourceKey}-env-${edge.name.toLowerCase()}`,
             action: "fake.env.set",
@@ -209,7 +206,7 @@ export const fakeProvider = defineProvider({
         const envSteps = req.bindings
           .filter((b) => b.to.resourceKey === intent.resourceKey)
           .map((b) => `${intent.resourceKey}-env-${b.name.toLowerCase()}`);
-        steps.push({
+        if (operation.kind === "deploy" && operation.environment === (intent.environment ?? "production")) steps.push({
           id: `${intent.resourceKey}-deploy`,
           action: "fake.app.deploy",
           summary: `Deploy \`${intent.resourceKey}\` to fake production`,
@@ -219,7 +216,7 @@ export const fakeProvider = defineProvider({
           produces: ["productionUrl"],
           postcondition: "The deployment is live and serving.",
         });
-        steps.push({
+        if (operation.kind === "deploy" && operation.environment === (intent.environment ?? "production")) steps.push({
           id: `${intent.resourceKey}-verify`,
           action: "fake.app.verify",
           summary: `Verify \`${intent.resourceKey}\` responds in production`,

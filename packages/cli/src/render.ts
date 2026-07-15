@@ -37,6 +37,18 @@ export function renderHuman(env: ResultEnvelope): string {
     }
   }
 
+  const checks = env.data["checks"];
+  if (Array.isArray(checks) && checks.length > 0) {
+    lines.push("");
+    for (const raw of checks) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const check = raw as { name?: unknown; ok?: unknown; detail?: unknown };
+      if (typeof check.name !== "string" || typeof check.ok !== "boolean") continue;
+      const detail = typeof check.detail === "string" ? `: ${check.detail}` : "";
+      lines.push(`  ${check.ok ? "ok" : "failed"} ${check.name}${detail}`);
+    }
+  }
+
   for (const requirement of env.requirements ?? []) {
     lines.push("");
     if (requirement.kind === "installation") {
@@ -64,7 +76,8 @@ export function renderHuman(env: ResultEnvelope): string {
   const planId = env.data["planId"];
   if (typeof planId === "string" && env.status === "approval_required") {
     lines.push("");
-    lines.push(`  Review the steps above, then run: bahama apply ${planId} --approved`);
+    lines.push("  Approve this plan with:");
+    lines.push(`    bahama apply ${planId} --approved`);
   }
 
   lines.push("");

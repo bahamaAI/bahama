@@ -85,6 +85,11 @@ describe("bahama CLI golden path (fake provider)", () => {
     expect(exitCode).toBe(0);
     expect(env!.status).toBe("approval_required");
     expect(env!.data["consequentialSteps"]).toBeGreaterThan(0);
+    const steps = env!.data["steps"] as Array<{ providerId: string; classificationReasons?: string[] }>;
+    const localReason = steps.find((step) => step.providerId === "local")!.classificationReasons!.join(" ");
+    const hostedReason = steps.find((step) => step.providerId === "fake" && step.classificationReasons?.some((reason) => reason.includes("binding DATABASE_URL")))!.classificationReasons!.join(" ");
+    expect(localReason).toContain("environments.local.variables");
+    expect(hostedReason).toContain("environments.production.variables");
     planId = env!.data["planId"] as string;
   });
 
@@ -96,13 +101,20 @@ describe("bahama CLI golden path (fake provider)", () => {
     const applied = await bahama(root, ["apply", planId, "--approved"]);
     expect(applied.exitCode).toBe(0);
     expect(applied.env!.status).toBe("succeeded");
+    expect(await readFile(join(root, ".env.local"), "utf8")).toContain("DATABASE_URL=");
   });
 
-  it("deploy fast-path auto-applies the now-routine plan", async () => {
-    const { exitCode, env } = await bahama(root, ["deploy"]);
-    expect(exitCode).toBe(0);
-    expect(env!.status).toBe("succeeded");
-    expect(env!.command).toBe("deploy");
+  it("first deploy stops for approval, then later deploys use the routine fast path", async () => {
+    const first = await bahama(root, ["deploy"]);
+    expect(first.exitCode).toBe(0);
+    expect(first.env!.status).toBe("approval_required");
+    const firstPlanId = first.env!.data["planId"] as string;
+    expect((await bahama(root, ["apply", firstPlanId, "--approved"])).env!.status).toBe("succeeded");
+
+    const routine = await bahama(root, ["deploy"]);
+    expect(routine.exitCode).toBe(0);
+    expect(routine.env!.status).toBe("succeeded");
+    expect(routine.env!.command).toBe("deploy");
   });
 
   it("deploy stops for approval when provider config changes", async () => {
@@ -111,7 +123,7 @@ describe("bahama CLI golden path (fake provider)", () => {
     expect(exitCode).toBe(0);
     expect(env!.status).toBe("approval_required");
     const steps = env!.data["steps"] as Array<{ id: string; classificationReasons?: string[] }>;
-    const deploy = steps.find((s) => s.id === "application-deploy")!;
+    const deploy = steps.find((s) => s.id === "environment.production-deploy")!;
     expect(deploy.classificationReasons!.join(" ")).toContain("vercel.json");
   });
 
@@ -137,8 +149,12 @@ describe("bahama CLI golden path (fake provider)", () => {
     expect(result.stdout).toContain("`fake`");
   });
 
-  it("detach clears the lock so the next plan re-provisions", async () => {
-    const detach = await bahama(root, ["detach"]);
+  it("detach requires explicit approval, then clears only local identity", async () => {
+    const blocked = await bahama(root, ["detach"]);
+    expect(blocked.env!.status).toBe("approval_required");
+    expect(blocked.env!.message).toContain("deletes no remote resources");
+
+    const detach = await bahama(root, ["detach", "--approved"]);
     expect(detach.env!.status).toBe("succeeded");
 
     const replan = await bahama(root, ["plan"]);

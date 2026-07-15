@@ -42,6 +42,7 @@ export function classifyStep(step: ContributedStep, ctx: ClassificationContext):
   if (effects.destructive) reasons.push("destructive");
   if (effects.migratesSchema) reasons.push("executes a schema migration");
   if (effects.bindsAccount) reasons.push("binds or changes a provider account");
+  if (effects.changesConfiguration) reasons.push("changes provider runtime or build configuration");
 
   if (effects.transfersSecret) {
     const reason = classifySecretTransfer(step, ctx);
@@ -124,10 +125,19 @@ function classifyDeploy(step: ContributedStep, ctx: ClassificationContext): stri
 
 function edgesForStep(step: ContributedStep, edges: BindingEdge[]): BindingEdge[] {
   const consumed = new Set(step.consumes ?? []);
-  return edges.filter((edge) => consumed.has(addressString(edge.from)));
+  const bindingName = step.inputs?.["bindingName"];
+  const bindingTo = step.inputs?.["bindingTo"];
+  return edges.filter((edge) =>
+    consumed.has(addressString(edge.from)) &&
+    (typeof bindingName !== "string" || edge.name === bindingName) &&
+    (typeof bindingTo !== "string" || addressString(edge.to) === bindingTo),
+  );
 }
 
 export function addressString(address: { resourceKey: string; capability: string }): string {
+  if (address.resourceKey.startsWith("environment.")) {
+    return `environments.${address.resourceKey.slice("environment.".length)}.${address.capability}`;
+  }
   return address.resourceKey === "application"
     ? `application.${address.capability}`
     : `resources.${address.resourceKey}.${address.capability}`;

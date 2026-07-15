@@ -1,55 +1,169 @@
+<div align="center">
+
+<img src=".github/assets/bahama.svg" width="84" alt="" />
+
 # Bahama
 
-**Agent-native application infrastructure.** Your coding agent writes the app; Bahama gives it one coherent, safe way to choose providers, provision resources, connect them, deploy, and operate — through provider accounts you already own, or through the managed [Bahama Cloud](https://www.bahama.ai).
+### **The Cloud Toolkit Built for Agents**
+
+Your agent can write the code, but then what? Bahama gives agents a safe, reliable way to manage cloud services: choose providers, provision resources, wire everything together, test locally, and deploy to the web.
+
+Works across Claude Code, Codex, Cursor, and all major coding agents — and with provider accounts you already have (Vercel, Neon, etc.) or directly on the managed [Bahama Cloud](https://www.bahama.ai).
+
+<img src=".github/assets/plan-apply.svg" width="720" alt="Demo: you ask your agent for Postgres, the agent plans it with Bahama, you approve, and Bahama builds and verifies it" />
+
+</div>
+
+## Why Bahama?
+
+Coding agents can write entire applications... but stall trying to get them online. They don't know each provider's unique quirks or how to make them work together, so they hand the hard parts back to you: _log into the dashboard, create a database, paste me the connection string_. **You end up working for your agent.**
+
+Bahama flips that. It teaches agents to operate cloud resources along three principles:
+
+1. **Gives agents a structured way to manage cloud services**: provision DBs, manage environment variables, run deployments, and more. It makes agents as good at deploying code as they are at writing it.
+
+2. **Creates an open standard that works across providers**. No lock-in to one web host. Bahama is built from blocks that you and your agent can compose to best fit the project. Cloudflare + Mongo? Vercel + Supabase + S3? All-in-one Bahama Cloud? They all work the same with `bahama deploy`.
+
+3. **Keeps you in control**. Agents do the work, but you always link your cloud accounts yourself and approve consequential decisions. Sensitive API keys and connection strings are passed securely.
+
+## Quickstart
+
+> **Alpha** — Bahama is in active development. Commands and provider contracts may change before v0.1.
+
+Bahama is built to be used by agents. To get started, just prompt your coding agent (Claude Code, Codex, etc.):
 
 ```text
-bahama.yaml (declarative intent, written by the model)
-        │
-        ▼
-bahama plan   →  deterministic, reviewable plan (routine vs consequential steps)
-        │
-        ▼
-bahama apply  →  verified execution: postconditions, receipts, resume
-bahama deploy →  the iteration loop: auto-applies when every step is routine
+Read https://bahama.ai/install.md and install Bahama for this workspace.
 ```
+
+That installs the CLI and the `bahama-builder` skill — the operating manual your agent follows. From there, just ask for outcomes, mention Bahama, and your agent knows what to do:
+
+```text
+Let's build a snake game. I want a DB to save high scores. When it's ready, put it on the web with Bahama so I can share it with my friends.
+```
+
+Prefer to install manually? `npm install -g @bahama-ai/cli`, then `bahama setup` to install the skill for your agent.
 
 ## How it works
 
-- **The model decides.** `bahama inspect` and `bahama providers` give the agent accurate ingredients — detected framework, provider capabilities, use/avoid guidance. The agent writes `bahama.yaml`. The CLI contains no LLM and no hidden ranking.
-- **The CLI executes deterministically.** `bahama plan` compiles intent into an immutable plan with a content-derived id. Steps are classified **routine** (redeploys, verified reads, unchanged-edge secret rotation) or **consequential** (resource creation, migrations, account changes, secret rewiring) — consequential plans require explicit approval.
-- **Secrets stay sealed.** Values like connection strings move between providers inside the execution engine as opaque handles. They never appear in plans, receipts, logs, agent output, or committed files, and resume re-derives them from the provider instead of persisting them.
-- **Everything is verified.** A step succeeds when its postcondition is verified against live provider state — never because a command exited 0. Receipts land in an append-only journal; an interrupted apply resumes without recreating resources.
+Nine small commands cover the whole lifecycle — and they work the same on every provider. Most of the time your agent runs these commands behind the scenes. You work with the agent to define the best plan, you approve, and your app is live.
 
-## State model
+| Command                             | What it does                                                     |
+| :---------------------------------- | :--------------------------------------------------------------- |
+| `bahama inspect`                    | What is this app? Framework, scripts, env var names — no secrets |
+| `bahama providers`                  | What's available? Each provider describes its own capabilities   |
+| `bahama init`                       | Write a starter `bahama.yaml` — touches nothing remote           |
+| `bahama plan`                       | Compile intent into a reviewable plan — always read-only         |
+| `bahama apply <plan-id> --approved` | Execute the plan, verifying every step                           |
+| `bahama deploy [environment]`       | Ship the application                                             |
+| `bahama status`                     | Compare committed state with live provider state                 |
+| `bahama doctor`                     | Check that everything is set up                                  |
+| `bahama auth login <provider>`      | Link your own accounts with third-party providers                |
 
-| File | Author | Committed | Contents |
-| :-- | :-- | :-- | :-- |
-| `bahama.yaml` | you / your agent | yes | intent: providers, frameworks, resources, bindings |
-| `bahama.lock` | the CLI | yes | resolved durable IDs, driver compatibility, repo fingerprint |
-| `.bahama/` | the CLI | no | plans, operation receipts, locks |
-| credentials | provider CLIs / OS keyring | never | sessions and tokens |
+Bahama's orchestration is managed through several files in your repo — read them, diff them, commit them. Plans only run after your approval, every step is verified against live provider state, and secrets are sealed end-to-end or stored in an uncommitted `.env.local` file.
 
-## Packages
+| File          | Owner                  | Committed | Purpose                                                  |
+| :------------ | :--------------------- | :-------- | :------------------------------------------------------- |
+| `bahama.yaml` | you and your agent     | yes       | Desired providers, environments, resources, and bindings |
+| `bahama.lock` | Bahama                 | yes       | Resolved durable identities and applied binding edges    |
+| `.bahama/`    | Bahama                 | no        | Immutable plans, operation receipts, and operation locks |
+| Credentials   | provider / Bahama auth | never     | Sessions and tokens in protected credential stores       |
 
-| Package | What it is |
-| :-- | :-- |
-| [`@bahama-ai/cli`](packages/cli) | the `bahama` binary |
-| [`@bahama-ai/provider-kit`](packages/provider-kit) | the public contract for authoring providers |
-| [`@bahama-ai/core`](packages/core) | plan/execution/state/secret engine (internal) |
-| [`providers/*`](providers) | official provider drivers, including the contract-test `fake` provider |
-| [`skills/bahama-builder`](skills) | the operating guide installed into coding agents |
+## Many providers, one standard
 
-## Development
+Bahama is designed to be an **open** standard. It works with a variety of cloud services that you can snap together as needed. Each provider (web host, database service, storage bucket...) declares what it _produces_ and _consumes_ — a database produces `connectionUrl`, an environment consumes `variables` — and Bahama wires compatible outputs to inputs. Swap any block for another that fills the same role.
+
+Your agent defines the whole stack in one standard `bahama.yaml` file at the root of your project. Bahama can interpret, plan, and deploy around it:
+
+```yaml
+version: 1
+
+project:
+  name: community-notes
+
+application:
+  framework: nextjs
+
+environments:
+  local:
+    provider: local
+  production:
+    provider: vercel
+
+resources:
+  database:
+    provider: neon
+    engine: postgres
+
+bindings:
+  DATABASE_URL:
+    from: resources.database.connectionUrl
+    to:
+      - environments.local.variables
+      - environments.production.variables
+```
+
+### Current providers
+
+[Bahama Cloud](https://www.bahama.ai) is the first-party cloud service behind this project. It is designed to be a fast, stable, streamlined way to get most projects live in minutes. Bahama also supports a growing list of third-party providers. You provide the account, Bahama provides the orchestration:
+
+| Provider         | ID             | What it manages                                                              |
+| :--------------- | :------------- | :--------------------------------------------------------------------------- |
+| **Bahama Cloud** | `bahama-cloud` | Managed hosting for static sites, full-stack React apps, and SQL databases   |
+| **Vercel**       | `vercel`       | Next.js, Vite, and static applications in your own Vercel account            |
+| **Neon**         | `neon`         | Serverless Postgres in your own Neon account, plus checked-in SQL migrations |
+| **Local**        | `local`        | Protected local env-file bindings so `npm run dev` just works                |
+| **Fake**         | `fake`         | Deterministic provider used to specify and test the provider contract        |
+
+The ID is the name your agent uses in `bahama.yaml` — `provider: neon`, `provider: vercel`.
+
+## Included in this repository
+
+This monorepo includes everything needed to run Bahama — the agent skill, CLI, core engine, and all the provider contracts. The CLI ([`@bahama-ai/cli`](https://www.npmjs.com/package/@bahama-ai/cli)) bundles the entire toolkit into one npm package.
+
+Note: [`@bahama-ai/cloud-sdk`](https://www.npmjs.com/package/@bahama-ai/cloud-sdk) is an additional package that enables local testing of Bahama Cloud projects.
+
+| Path                                             | Purpose                                                                |
+| :----------------------------------------------- | :--------------------------------------------------------------------- |
+| [`packages/cli`](packages/cli)                   | The published `bahama` command-line interface                          |
+| [`packages/core`](packages/core)                 | Planning, approval, execution, state, verification, and secrets engine |
+| [`packages/provider-kit`](packages/provider-kit) | The contract every provider implements                                 |
+| [`packages/cloud-sdk`](packages/cloud-sdk)       | Server-side runtime bridge for Bahama Cloud application resources      |
+| [`providers/`](providers)                        | Official provider implementations                                      |
+| [`skills/bahama-builder`](skills/bahama-builder) | The operating guide installed into a user's coding agent               |
+
+## Contributing
+
+Bug fixes, sharper agent UX, and new provider blocks are all welcome.
+
+You don't need this repository to _use_ Bahama — the npm package ships everything. Clone it to work on Bahama itself (Node.js `20.19+`):
 
 ```bash
+git clone https://github.com/bahamaAI/bahama.git
+cd bahama
 npm install
 npm run build
 npm test
-npm run lint
 ```
 
-The contract test suite runs every provider through the same safety envelope: typed installation/auth requirements, deterministic plan ids, sealed secret transfer, mid-apply failure and fresh-process resume, idempotent creation, drift detection, and no-secret-anywhere scans.
+Your local build runs with `node packages/cli/dist/bin.js`, and the fake provider gives you the full plan/apply loop with zero accounts and zero infrastructure:
+
+```bash
+export BAHAMA_ENABLE_FAKE=1
+alias bahama="node $PWD/packages/cli/dist/bin.js"
+
+mkdir -p /tmp/bahama-lab && cd /tmp/bahama-lab
+bahama init --name bahama-lab --application fake --framework fake-framework --database fake
+bahama plan   # then: bahama apply <plan-id> --approved
+```
+
+Steps for contributing:
+
+1. Read [`AGENTS.md`](AGENTS.md) first — it holds the dependency rules and safety invariants.
+2. Keep changes small, and add a regression test for behavior changes.
+3. If agent-facing behavior changes, update the provider descriptions and `skills/bahama-builder` too.
+4. Run `npm run build && npm test && npm run lint` before opening a pull request.
 
 ## License
 
-MIT
+[MIT](LICENSE)

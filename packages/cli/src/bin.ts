@@ -109,15 +109,24 @@ program
 
 program
   .command("deploy")
+  .argument("[environment]", "environment to deploy (inferred when exactly one hosted environment exists)")
   .description("Fast path: compile and auto-apply when every step is routine; stop for approval otherwise")
   .option("--json", "emit a JSON result envelope")
-  .action(wrap("deploy", (opts) => runDeploy(projectRoot, opts)));
+  .action(wrap("deploy", (opts, environment) => runDeploy(projectRoot, environment, opts)));
 
 program
   .command("detach")
-  .description("Clear resolved resource identity (bahama.lock) but keep intent — for forks and templates")
+  .description("Forget all resolved identities without deleting provider resources — for forks/templates only")
+  .option("--approved", "confirm you intend to forget the entire resolved stack")
   .option("--json", "emit a JSON result envelope")
-  .action(wrap("detach", (opts) => runDetach(projectRoot, opts)));
+  .action(async (options: { json?: boolean; approved?: boolean }) => {
+    const emitOpts = emitOptions(options);
+    try {
+      await runDetach(projectRoot, { approved: options.approved === true }, emitOpts);
+    } catch (error) {
+      fail("detach", emitOpts, error);
+    }
+  });
 
 program
   .command("status")

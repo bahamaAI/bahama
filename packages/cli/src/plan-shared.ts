@@ -1,4 +1,4 @@
-import type { JsonObject, ResultEnvelope } from "@bahama-ai/provider-kit";
+import type { JsonObject, PlanOperation, ResultEnvelope } from "@bahama-ai/provider-kit";
 import { compilePlan, savePlan, type PlanDocument } from "@bahama-ai/core";
 import { buildEngine, buildRegistry, envelope } from "./runtime.js";
 
@@ -9,12 +9,13 @@ export interface CompiledPlanResult {
 }
 
 /** Shared by `bahama plan` and `bahama deploy`: compile, persist, describe. */
-export async function compileAndDescribe(projectRoot: string, command: string): Promise<CompiledPlanResult> {
+export async function compileAndDescribe(projectRoot: string, command: string, operation: PlanOperation): Promise<CompiledPlanResult> {
   const engine = buildEngine(projectRoot);
   const outcome = await compilePlan({
     projectRoot,
     registry: buildRegistry(),
     contextFor: (id) => engine.contextFor(id),
+    operation,
   });
 
   if (outcome.kind === "blocked") {
@@ -45,7 +46,7 @@ export async function compileAndDescribe(projectRoot: string, command: string): 
       allRoutine ? "succeeded" : "approval_required",
       allRoutine
         ? `Plan ${outcome.plan.planId} contains only routine steps.`
-        : `Plan ${outcome.plan.planId} needs approval: ${consequential.length} consequential step(s). Review and apply with --approved.`,
+        : `Plan ${outcome.plan.planId} has ${outcome.plan.steps.length} steps.`,
       data,
       { warnings: outcome.plan.warnings },
     ),

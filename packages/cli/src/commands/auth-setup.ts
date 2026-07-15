@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { clearCloudToken, cloudLogin, freshCloudToken } from "../cloud-auth.js";
 import { UsageError, buildEngine, buildRegistry, emit, envelope, type EmitOptions } from "../runtime.js";
 
@@ -6,9 +7,9 @@ import { UsageError, buildEngine, buildRegistry, emit, envelope, type EmitOption
  * hands off to the official tool's own flow; Bahama never sees or stores
  * those credentials. The bahama-cloud OAuth flow lands with its driver.
  *
- * Agents should not run `login` themselves: the agent contract says surface
- * `auth_required` to the human and let them log in from their own terminal —
- * that keeps codes and tokens out of agent transcripts.
+ * Bahama launches official provider authentication interactively. The
+ * provider owns the browser/device flow and credential store; after it exits,
+ * Bahama probes again and reports the authenticated identity.
  */
 export async function runAuth(
   action: "login" | "status" | "logout",
@@ -29,6 +30,28 @@ export async function runAuth(
 
   const engine = buildEngine(process.cwd());
   const probe = await driver.probe(engine.contextFor(providerId), { intent: [], locked: [] });
+
+  if (!probe.tool.installed) {
+    emit(
+      envelope(
+        "auth",
+        "installation_required",
+        `The ${providerId} provider CLI is not installed.`,
+        { provider: providerId, state: "missing-tool" },
+        {
+          requirements: [
+            {
+              kind: "installation",
+              providerId,
+              tool: providerId,
+              installHint: probe.tool.installHint ?? `Install the ${providerId} CLI`,
+            },
+          ],
+        },
+      ),
+      emitOptions,
+    );
+  }
 
   if (action === "status") {
     const authenticated = probe.auth.state === "authenticated";
@@ -57,24 +80,113 @@ export async function runAuth(
     );
   }
 
-  // login / logout delegate to the provider's official flow. Drivers that
-  // wrap external CLIs report the exact command; interactive flows are never
-  // started from here (this process may be agent-driven and headless).
-  const hint =
-    action === "login"
-      ? (probe.auth.loginHint ?? `Use the ${providerId} provider's official login`)
-      : `Use the ${providerId} provider's official logout`;
+  if (action === "login" && probe.auth.state === "authenticated") {
+    emit(
+      envelope("auth", "succeeded", `Already authenticated with ${providerId} as ${probe.auth.identity ?? "unknown"}.`, {
+        provider: providerId,
+        state: probe.auth.state,
+        identity: probe.auth.identity ?? null,
+      }),
+      emitOptions,
+    );
+  }
+
+  const args = action === "login" ? driver.authCommands?.loginArgs : driver.authCommands?.logoutArgs;
+  if (!args) {
+    const hint =
+      action === "login"
+        ? (probe.auth.loginHint ?? `Use the ${providerId} provider's official login`)
+        : `The ${providerId} CLI does not expose a supported logout command.`;
+    emit(
+      envelope(
+        "auth",
+        "decision_required",
+        hint,
+        { provider: providerId, state: probe.auth.state },
+      ),
+      emitOptions,
+    );
+  }
+
+  const context = engine.contextFor(providerId);
+  let executable: string | null = null;
+  for (const candidate of driver.authCommands?.executables ?? []) {
+    executable = await context.run.which(candidate);
+    if (executable) break;
+  }
+  if (!executable) {
+    emit(
+      envelope("auth", "installation_required", `The ${providerId} authentication command is not available.`, {
+        provider: providerId,
+      }),
+      emitOptions,
+    );
+  }
+
+  const exitCode = await runInteractiveAuth(executable, args, options, emitOptions);
+  if (exitCode !== 0) {
+    emit(
+      envelope(
+        "auth",
+        action === "login" ? "auth_required" : "failed",
+        `${providerId} ${action} exited with code ${exitCode}.`,
+        { provider: providerId, exitCode },
+      ),
+      emitOptions,
+    );
+  }
+
+  const verifiedEngine = buildEngine(process.cwd());
+  const verified = await driver.probe(verifiedEngine.contextFor(providerId), { intent: [], locked: [] });
+  const authenticated = verified.auth.state === "authenticated";
+  const succeeded = action === "login" ? authenticated : !authenticated;
   emit(
     envelope(
       "auth",
-      probe.auth.state === "authenticated" && action === "login" ? "succeeded" : "auth_required",
-      probe.auth.state === "authenticated" && action === "login"
-        ? `Already authenticated with ${providerId} as ${probe.auth.identity ?? "unknown"}.`
-        : `Run this in your own terminal: ${hint}`,
-      { provider: providerId, hint },
+      succeeded ? "succeeded" : action === "login" ? "auth_required" : "failed",
+      succeeded
+        ? action === "login"
+          ? `Authenticated with ${providerId} as ${verified.auth.identity ?? "unknown"}.`
+          : `Logged out of ${providerId}.`
+        : action === "login"
+          ? `${providerId} login completed, but no authenticated session was detected.`
+          : `${providerId} logout completed, but the session is still authenticated.`,
+      {
+        provider: providerId,
+        state: verified.auth.state,
+        identity: verified.auth.identity ?? null,
+      },
     ),
     emitOptions,
   );
+}
+
+function runInteractiveAuth(
+  executable: string,
+  args: string[],
+  options: { noBrowser: boolean },
+  emitOptions: EmitOptions,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const env = { ...process.env };
+    // Provider auth must stay interactive even when Bahama was launched by an
+    // agent or CI-like shell. --no-browser leaves URL/device output visible.
+    delete env["CI"];
+    if (options.noBrowser) env["BROWSER"] = "echo";
+    const child = spawn(executable, args, {
+      cwd: process.cwd(),
+      env,
+      stdio: emitOptions.json ? ["inherit", 2, 2] : "inherit",
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (signal) {
+        reject(new Error(`${executable} ${args.join(" ")} was terminated by ${signal}.`));
+        return;
+      }
+      resolve(code ?? 1);
+    });
+  });
 }
 
 async function runCloudAuth(

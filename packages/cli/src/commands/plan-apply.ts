@@ -1,10 +1,10 @@
 import type { JsonObject } from "@bahama-ai/provider-kit";
-import { applyPlan } from "@bahama-ai/core";
+import { applyPlan, loadManifest } from "@bahama-ai/core";
 import { compileAndDescribe } from "../plan-shared.js";
 import { buildEngine, buildRegistry, emit, envelope, type EmitOptions } from "../runtime.js";
 
 export async function runPlan(projectRoot: string, emitOptions: EmitOptions): Promise<never> {
-  const compiled = await compileAndDescribe(projectRoot, "plan");
+  const compiled = await compileAndDescribe(projectRoot, "plan", { kind: "reconcile" });
   // `plan` always stops for review — even an all-routine plan is worth a look
   // when someone asked for the plan explicitly. `deploy` is the fast path.
   if (compiled.plan && compiled.allRoutine) {
@@ -12,7 +12,7 @@ export async function runPlan(projectRoot: string, emitOptions: EmitOptions): Pr
       {
         ...compiled.envelope,
         status: "approval_required",
-        message: `Plan ${compiled.plan.planId} contains only routine steps. Apply it with \`bahama apply ${compiled.plan.planId}\` (or use \`bahama deploy\` next time).`,
+        message: `Plan ${compiled.plan.planId} contains only routine reconciliation steps and no code deployment. Apply it with \`bahama apply ${compiled.plan.planId}\`.`,
       },
       emitOptions,
     );
@@ -34,15 +34,23 @@ export async function runApply(
  * step is routine. Anything consequential stops with the full plan, exactly
  * like `bahama plan` — there is no flag to force it through.
  */
-export async function runDeploy(projectRoot: string, emitOptions: EmitOptions): Promise<never> {
-  const compiled = await compileAndDescribe(projectRoot, "deploy");
+export async function runDeploy(projectRoot: string, environment: string | undefined, emitOptions: EmitOptions): Promise<never> {
+  const manifest = await loadManifest(projectRoot);
+  const deployable = Object.entries(manifest.environments)
+    .filter(([, value]) => value.provider !== "local")
+    .map(([name]) => name);
+  const target = environment ?? (deployable.length === 1 ? deployable[0] : undefined);
+  if (!target) throw new Error(`Choose a deployment environment: ${deployable.join(", ") || "none are defined"}.`);
+  if (!(target in manifest.environments) || manifest.environments[target]!.provider === "local") {
+    throw new Error(`Environment \`${target}\` is not a deployable environment in bahama.yaml.`);
+  }
+  const compiled = await compileAndDescribe(projectRoot, "deploy", { kind: "deploy", environment: target });
   if (!compiled.plan) emit(compiled.envelope, emitOptions);
   if (!compiled.allRoutine) {
     emit(
       {
         ...compiled.envelope,
         status: "approval_required",
-        message: `Deploy needs approval first: ${compiled.envelope.message}`,
       },
       emitOptions,
     );

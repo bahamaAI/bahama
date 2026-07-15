@@ -11,7 +11,7 @@ The project must include:
 - `package.json`
 - one lockfile: `package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock`
 - Hono dependency
-- `@bahama-ai/sdk` dependency when using Bahama database types, `getDb`, or local database testing
+- `@bahama-ai/cloud-sdk` dependency when using Bahama database types, `getDb`, or local database testing
 - deployable backend entry at `server/index.ts`, `server/index.js`, `server/index.mts`, or `server/index.tsx`
 
 No `index.html`, `src/`, or static frontend assets are required.
@@ -48,7 +48,7 @@ Minimal API:
 
 ```ts
 import {Hono} from "hono";
-import type {BahamaDatabase} from "@bahama-ai/sdk/server";
+import type {BahamaDatabase} from "@bahama-ai/cloud-sdk/server";
 
 type Env = {
   Bindings: {

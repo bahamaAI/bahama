@@ -6,6 +6,7 @@ import type {
   ProbeResult,
   ProviderContext,
   ProviderDriver,
+  PlanOperation,
   Requirement,
   ResourceIntent,
 } from "@bahama-ai/provider-kit";
@@ -23,6 +24,8 @@ export interface PlanDocument {
   createdAt: string;
   manifestHash: string;
   lockHash: string;
+  /** Provider-owned configuration reviewed when this plan was compiled. */
+  providerConfigFingerprints: Record<string, string>;
   /**
    * The account each provider's steps run under: durable id (recorded in the
    * lock) plus display label, e.g. { vercel: { id: "team_abc", label: "studio" } }.
@@ -30,6 +33,7 @@ export interface PlanDocument {
   accounts: Record<string, { id: string; label: string; kind?: string }>;
   steps: PlannedStep[];
   warnings: string[];
+  operation: PlanOperation;
 }
 
 export type PlanOutcome =
@@ -47,6 +51,7 @@ export interface PlannerDeps {
   projectRoot: string;
   registry: ReadonlyMap<string, ProviderDriver>;
   contextFor: (providerId: string) => ProviderContext;
+  operation?: PlanOperation;
 }
 
 /**
@@ -57,6 +62,7 @@ export interface PlannerDeps {
  */
 export async function compilePlan(deps: PlannerDeps): Promise<PlanOutcome> {
   const warnings: string[] = [];
+  const operation = deps.operation ?? { kind: "reconcile" as const };
   const manifest = await loadManifest(deps.projectRoot);
   const lock = await loadLock(deps.projectRoot);
 
@@ -144,6 +150,8 @@ export async function compilePlan(deps: PlannerDeps): Promise<PlanOutcome> {
       bindings: edges.filter((edge) =>
         providerIntents.some((i) => i.resourceKey === edge.from.resourceKey || i.resourceKey === edge.to.resourceKey),
       ),
+      operation,
+      appliedBindings: lock?.bindings ?? [],
     });
     warnings.push(...(contribution.warnings ?? []));
     decisions.push(...(contribution.decisions ?? []));
@@ -210,6 +218,7 @@ export async function compilePlan(deps: PlannerDeps): Promise<PlanOutcome> {
   // for providers that genuinely have no org/team concept.
   const accounts: PlanDocument["accounts"] = {};
   for (const [providerId, probe] of probes) {
+    if (!steps.some((step) => step.providerId === providerId)) continue;
     if (probe.auth.account) {
       const { id, label, kind } = probe.auth.account;
       accounts[providerId] = { id, label, ...(kind !== undefined ? { kind } : {}) };
@@ -224,9 +233,11 @@ export async function compilePlan(deps: PlannerDeps): Promise<PlanOutcome> {
   const planBody = {
     manifestHash: manifestHash(manifest),
     lockHash: lockHash(lock),
+    providerConfigFingerprints: classificationContext.currentConfigFingerprints,
     accounts,
     steps: ordered,
     warnings,
+    operation,
   };
 
   return {
@@ -254,6 +265,19 @@ function collectIntents(
 ): CollectedIntents | { kind: "error"; message: string } {
   const byProvider = new Map<string, ResourceIntent[]>();
   const byResourceKey = new Map<string, ResourceIntent>();
+  const environmentProviders = new Map<string, string>();
+  for (const [name, environment] of Object.entries(manifest.environments)) {
+    if (manifest.legacyApplication) continue;
+    const prior = environmentProviders.get(environment.provider);
+    if (prior) {
+      return {
+        kind: "error",
+        message: `Provider \`${environment.provider}\` is selected for both \`${prior}\` and \`${name}\`. ` +
+          "This alpha supports one environment per provider; use distinct providers or keep one hosted environment.",
+      };
+    }
+    environmentProviders.set(environment.provider, name);
+  }
 
   const push = (intent: ResourceIntent): string | null => {
     const driver = registry.get(intentProvider(manifest, intent.resourceKey));
@@ -263,7 +287,7 @@ function collectIntents(
     if (!driver.descriptor.roles.includes(intent.role)) {
       return `Provider \`${driver.descriptor.id}\` does not support the \`${intent.role}\` role.`;
     }
-    if (intent.role === "application" && intent.framework && driver.descriptor.frameworks) {
+    if ((intent.role === "application" || intent.role === "environment") && intent.framework && driver.descriptor.frameworks) {
       if (!driver.descriptor.frameworks.includes(intent.framework)) {
         return (
           `Provider \`${driver.descriptor.id}\` does not support framework \`${intent.framework}\` ` +
@@ -284,14 +308,32 @@ function collectIntents(
     return null;
   };
 
-  const appError = push({
-    resourceKey: "application",
-    role: "application",
-    projectName: manifest.project.name,
-    framework: manifest.application.framework,
-    config: manifest.application.config ?? {},
-  });
-  if (appError) return { kind: "error", message: appError };
+  if (manifest.legacyApplication) {
+    const error = push({
+      resourceKey: "application",
+      role: "application",
+      projectName: manifest.project.name,
+      ...(manifest.application?.framework ? { framework: manifest.application.framework } : {}),
+      config: manifest.legacyApplication.config ?? {},
+    });
+    if (error) return { kind: "error", message: error };
+  }
+  for (const [name, environment] of Object.entries(manifest.environments)) {
+    if (manifest.legacyApplication) continue;
+    const intent: ResourceIntent = {
+      resourceKey: `environment.${name}`,
+      role: "environment",
+      environment: name,
+      projectName: manifest.project.name,
+      ...(manifest.application?.framework ? { framework: manifest.application.framework } : {}),
+      config: {
+        ...(environment.config ?? {}),
+        ...(manifest.application?.dir ? { dir: manifest.application.dir } : {}),
+      },
+    };
+    const error = push(intent);
+    if (error) return { kind: "error", message: error };
+  }
 
   for (const [key, resource] of Object.entries(manifest.resources)) {
     const driver = registry.get(resource.provider);
@@ -302,6 +344,7 @@ function collectIntents(
       resourceKey: key,
       role,
       projectName: manifest.project.name,
+      ...(resource.environment ? { environment: resource.environment } : {}),
       config: resource.config ?? {},
     };
     if (resource.engine !== undefined) intent.engine = resource.engine;
@@ -313,7 +356,11 @@ function collectIntents(
 }
 
 function intentProvider(manifest: Manifest, resourceKey: string): string {
-  return resourceKey === "application" ? manifest.application.provider : manifest.resources[resourceKey]!.provider;
+  if (resourceKey === "application" && manifest.legacyApplication) return manifest.legacyApplication.provider;
+  if (resourceKey.startsWith("environment.")) {
+    return manifest.environments[resourceKey.slice("environment.".length)]!.provider;
+  }
+  return manifest.resources[resourceKey]!.provider;
 }
 
 function resolveBindingEdges(
@@ -324,22 +371,25 @@ function resolveBindingEdges(
   const edges: BindingEdge[] = [];
   for (const [name, binding] of Object.entries(manifest.bindings)) {
     const from = parseCapabilityAddress(binding.from);
-    const to = parseCapabilityAddress(binding.to);
+    const destinations = Array.isArray(binding.to) ? binding.to : [binding.to];
     const fromProvider = registry.get(intentProvider(manifest, from.resourceKey))!;
-    const toProvider = registry.get(intentProvider(manifest, to.resourceKey))!;
 
     const produced = fromProvider.descriptor.produces.find((c) => c.capability === from.capability);
     if (!produced) {
       return `Binding ${name}: provider \`${fromProvider.descriptor.id}\` does not produce \`${from.capability}\`.`;
     }
-    const consumed = toProvider.descriptor.consumes.find((c) => c.capability === to.capability);
-    if (!consumed) {
-      return `Binding ${name}: provider \`${toProvider.descriptor.id}\` does not consume \`${to.capability}\`.`;
+    for (const destination of destinations) {
+      const to = parseCapabilityAddress(destination);
+      const toProvider = registry.get(intentProvider(manifest, to.resourceKey))!;
+      const consumed = toProvider.descriptor.consumes.find((c) => c.capability === to.capability);
+      if (!consumed) {
+        return `Binding ${name}: provider \`${toProvider.descriptor.id}\` does not consume \`${to.capability}\`.`;
+      }
+      if (!intents.has(from.resourceKey) || !intents.has(to.resourceKey)) {
+        return `Binding ${name} references a resource that is not part of this project.`;
+      }
+      edges.push({ name, from, to, secret: produced.secret });
     }
-    if (!intents.has(from.resourceKey) || !intents.has(to.resourceKey)) {
-      return `Binding ${name} references a resource that is not part of this project.`;
-    }
-    edges.push({ name, from, to, secret: produced.secret });
   }
   return edges;
 }
@@ -378,13 +428,23 @@ async function buildClassificationContext(
       | undefined;
   }
 
-  // A provider may report the live framework setting in `observed.framework`;
+  // A provider reports each resource under its resource key. A live framework
+  // disagreement downgrades deploys off the fast path.
   // disagreement with the manifest downgrades deploys off the fast path.
   const frameworkMismatches = new Set<string>();
-  const appProbe = probes.get(manifest.application.provider);
-  const observedFramework = appProbe?.observed["framework"];
-  if (typeof observedFramework === "string" && observedFramework !== manifest.application.framework) {
-    frameworkMismatches.add("application");
+  for (const [name, environment] of Object.entries(manifest.environments)) {
+    if (manifest.legacyApplication) continue;
+    const key = `environment.${name}`;
+    const observed = probes.get(environment.provider)?.observed[key] as JsonObject | undefined;
+    const observedFramework = observed?.["framework"];
+    if (manifest.application && typeof observedFramework === "string" && observedFramework !== manifest.application.framework) {
+      frameworkMismatches.add(key);
+    }
+  }
+  if (manifest.legacyApplication && manifest.application) {
+    const observed = probes.get(manifest.legacyApplication.provider)?.observed["application"] as JsonObject | undefined;
+    const observedFramework = observed?.["framework"];
+    if (typeof observedFramework === "string" && observedFramework !== manifest.application.framework) frameworkMismatches.add("application");
   }
 
   return {

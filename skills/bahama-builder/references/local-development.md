@@ -2,7 +2,7 @@
 
 Use this file before setting up local Hono development, live Bahama-managed database access, dev tokens, `.env.local`, or Vite-to-Hono API proxying.
 
-This guidance applies when `application.provider: bahama-cloud`. Local setup is optional. Do it when the user wants to run the app locally or when validating server-side behavior before deploy.
+This guidance applies when `environments` contains both `local` and a Bahama Cloud environment. Local development is a first-class target, not a post-deploy workaround.
 
 ## Why The SDK Exists
 
@@ -12,9 +12,9 @@ The Bahama SDK bridges that gap for local server-side code. It uses a project-sc
 
 ## Dev Tokens
 
-Use a dev token only when local server-side code needs access to live Bahama-managed project resources. Dev tokens are obtained through the Bahama Cloud dashboard or a `bahama auth`-authenticated flow (TODO: exact command pending the bahama-cloud driver).
+Declare the three development bindings shown in `SKILL.md`, then run `bahama plan` and apply the reviewed plan. Bahama creates scoped project access and writes the values to the local environment file. Do not create or copy a token by hand during the normal workflow.
 
-Write the values to `.env.local`:
+The resulting gitignored `.env.local` contains:
 
 ```env
 BAHAMA_API_BASE_URL=...
@@ -37,13 +37,13 @@ Do not:
 Install the Bahama SDK when local server-side code needs Bahama-managed resources:
 
 ```bash
-npm install @bahama-ai/sdk
+npm install @bahama-ai/cloud-sdk
 ```
 
-Use `@bahama-ai/sdk/server` from server-side code only.
+Use `@bahama-ai/cloud-sdk/server` from server-side code only.
 
 ```ts
-import {getDb} from "@bahama-ai/sdk/server";
+import {getDb} from "@bahama-ai/cloud-sdk/server";
 ```
 
 In deployed Bahama app code, the SDK can use `env.DB`. In local code, it uses the Bahama dev proxy values from `.env.local`.

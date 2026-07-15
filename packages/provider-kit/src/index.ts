@@ -10,7 +10,7 @@ export {
   type ResultEnvelope,
 } from "./results.js";
 export { isSecretRef, type SecretRef, type SecretBroker } from "./secrets.js";
-export type { CapabilitySpec, CapabilityAddress, BindingEdge } from "./capabilities.js";
+export { formatCapabilityAddress, type CapabilitySpec, type CapabilityAddress, type BindingEdge, type AppliedBinding } from "./capabilities.js";
 export type { ProviderRole, ProviderDescriptor, TestedToolVersion } from "./descriptor.js";
 export type {
   StepEffects,
@@ -37,10 +37,12 @@ export {
   type ResourceIntent,
   type LockedIdentity,
   type ProviderAccount,
+  type ProviderAuthCommands,
   type ToolCompatibility,
   type ProbeResult,
   type ProbeRequest,
   type PlanRequest,
+  type PlanOperation,
   type ExecutionInputs,
   type DriftFinding,
   type ResourceStatus,

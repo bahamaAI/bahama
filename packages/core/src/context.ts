@@ -16,7 +16,10 @@ export interface EngineOptions {
    * refreshing if needed — or null when logged out. The engine seals the
    * value before any driver sees it.
    */
-  tokenSuppliers?: Record<string, () => Promise<string | null>>;
+  tokenSuppliers?: Record<
+    string,
+    (options?: { forceRefresh?: boolean }) => Promise<string | null>
+  >;
 }
 
 /**
@@ -39,8 +42,8 @@ export class Engine {
     const supplier = this.options.tokenSuppliers?.[providerId];
     const credentials: CredentialSource | undefined = supplier
       ? {
-          freshToken: async () => {
-            const raw = await supplier();
+          freshToken: async (options) => {
+            const raw = await supplier(options);
             return raw === null ? null : this.broker.seal(`${providerId}.accessToken`, raw);
           },
         }

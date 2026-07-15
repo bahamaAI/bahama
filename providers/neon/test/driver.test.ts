@@ -61,8 +61,7 @@ function makeCtx(
         const canned = handler(cmd, args, options);
         if (!canned) throw new Error(`Unexpected command: ${cmd} ${args.join(" ")}`);
         const rawStdout = canned.stdout ?? "";
-        // Mirror SafeRunner's captureSecretStdout contract: seal at capture,
-        // return only a redacted placeholder as stdout.
+        // Mirror SafeRunner's capture-time secret contracts.
         if (options?.captureSecretStdout && rawStdout.trim() !== "") {
           return {
             exitCode: canned.exitCode ?? 0,
@@ -70,6 +69,28 @@ function makeCtx(
             stderr: canned.stderr ?? "",
             timedOut: false,
             secret: secrets.seal(options.captureSecretStdout.name, rawStdout.trim()),
+          };
+        }
+        if (options?.captureSecretJson && rawStdout.trim() !== "") {
+          const document = JSON.parse(rawStdout) as Record<string | number, unknown>;
+          let cursor: Record<string | number, unknown> = document;
+          const path = options.captureSecretJson.path;
+          for (const segment of path.slice(0, -1)) {
+            cursor = cursor[segment] as Record<string | number, unknown>;
+          }
+          const leaf = path.at(-1)!;
+          const raw = cursor[leaf];
+          let secret: SecretRef | undefined;
+          if (typeof raw === "string" && raw !== "") {
+            secret = secrets.seal(options.captureSecretJson.name, raw);
+            cursor[leaf] = `[redacted:${options.captureSecretJson.name}]`;
+          }
+          return {
+            exitCode: canned.exitCode ?? 0,
+            stdout: JSON.stringify(document),
+            stderr: canned.stderr ?? "",
+            timedOut: false,
+            ...(secret ? { secret } : {}),
           };
         }
         return {
@@ -153,6 +174,13 @@ async function withMigrations(root: string, files: Record<string, string>): Prom
 const key = (call: RecordedCall) => `${call.cmd} ${call.args.join(" ")}`;
 
 describe("probe", () => {
+  it("declares delegated interactive login through either Neon CLI binary", () => {
+    expect(neonProvider.authCommands).toEqual({
+      executables: ["neon", "neonctl"],
+      loginArgs: ["auth"],
+    });
+  });
+
   it("reports the tool as missing when neither neon nor neonctl is on PATH", async () => {
     const root = await scratchDir();
     const { ctx } = makeCtx(root, () => undefined, () => null);
@@ -200,7 +228,7 @@ describe("probe", () => {
       if (args.join(" ") === "me --output json") return { stdout: JSON.stringify({ email: "dev@example.com" }) };
       if (args.join(" ") === "orgs list --output json")
         return { stdout: JSON.stringify([{ id: "org-1", name: "Personal" }]) };
-      if (args.join(" ") === "projects list --output json")
+      if (args.join(" ") === "projects list --org-id org-1 --output json")
         return { stdout: JSON.stringify({ projects: [{ id: "proj-123", name: "my-app" }] }) };
       return undefined;
     });
@@ -211,7 +239,7 @@ describe("probe", () => {
     expect(result.observed["database"]).toEqual({ exists: true, projectId: "proj-123" });
   });
 
-  it("reports the durable user id (or selected org) as the active account", async () => {
+  it("auto-selects a sole org as the active account and project scope", async () => {
     const root = await scratchDir();
     const handler: RunHandler = (cmd, args) => {
       if (args.join(" ") === "--version") return { stdout: "2.15.0" };
@@ -222,9 +250,10 @@ describe("probe", () => {
       if (args.join(" ").startsWith("projects list")) return { stdout: JSON.stringify({ projects: [] }) };
       return undefined;
     };
-    const personal = await makeCtx(root, handler).ctx;
-    const personalResult = await neonProvider.probe(personal, { intent: [DB_INTENT], locked: [] });
-    expect(personalResult.auth.account).toEqual({ id: "user-abc", label: "dev@example.com", kind: "personal" });
+    const automatic = await makeCtx(root, handler);
+    const automaticResult = await neonProvider.probe(automatic.ctx, { intent: [DB_INTENT], locked: [] });
+    expect(automaticResult.auth.account).toEqual({ id: "org-1", label: "Work", kind: "org" });
+    expect(automatic.calls.some((call) => call.args.join(" ") === "projects list --org-id org-1 --output json")).toBe(true);
 
     const org = await makeCtx(root, handler).ctx;
     const orgResult = await neonProvider.probe(org, {
@@ -289,6 +318,43 @@ describe("plan", () => {
       produces: ["connectionUrl"],
       inputs: { name: "my-app", region: null, orgId: null, projectId: null },
     });
+  });
+
+  it("drops a confirmed-missing locked project id when planning its replacement", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => undefined);
+    const contribution = await neonProvider.plan(
+      ctx,
+      planRequest({
+        probe: probed({ observed: { database: { exists: false } } }),
+        locked: [
+          { resourceKey: "database", accountId: "org-1", identity: { projectId: "proj-deleted" } },
+        ],
+      }),
+    );
+    expect(contribution.steps[0]).toMatchObject({
+      effects: { createsResource: true },
+      inputs: { projectId: null },
+    });
+  });
+
+  it("carries the probe's auto-selected sole org into planned project operations", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => undefined);
+    const contribution = await neonProvider.plan(
+      ctx,
+      planRequest({
+        probe: probed({
+          auth: {
+            state: "authenticated",
+            identity: "dev@example.com",
+            account: { id: "org-1", label: "Personal", kind: "org" },
+          },
+          accounts: [{ id: "org-1", label: "Personal", kind: "org" }],
+        }),
+      }),
+    );
+    expect(contribution.steps[0]?.inputs).toMatchObject({ orgId: "org-1" });
   });
 
   it("plans ensure + migrate with the sealed connectionUrl consumed by address", async () => {
@@ -369,6 +435,11 @@ describe("execute neon.project.ensure", () => {
     // The raw connection string never leaves the broker.
     expect(JSON.stringify(outcome)).not.toContain("sekret");
     expect(JSON.stringify(outcome)).not.toContain("neon.tech");
+    const create = calls.find((call) => call.args.join(" ").startsWith("projects create"))!;
+    expect(create.options?.captureSecretJson).toEqual({
+      name: "database.connectionUrl",
+      path: ["connection_uris", 0, "connection_uri"],
+    });
     // connection_uris from create was used; no separate connection-string call.
     expect(calls.some((call) => call.args[0] === "connection-string")).toBe(false);
   });

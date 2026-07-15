@@ -37,21 +37,44 @@ export async function runInit(projectRoot: string, options: InitOptions, emitOpt
     `  name: ${options.name}`,
     "",
     "application:",
-    `  provider: ${options.application}`,
     `  framework: ${options.framework}`,
+    "",
+    "environments:",
+    "  local:",
+    "    provider: local",
+    "  production:",
+    `    provider: ${options.application}`,
   ];
   if (options.database) {
     const engine = registry.get(options.database)!.descriptor.engines?.[0];
     lines.push("", "resources:", "  database:", `    provider: ${options.database}`);
     if (engine) lines.push(`    engine: ${engine}`);
+    const isNativeD1 = options.database === "bahama-cloud" && engine === "d1";
+    if (isNativeD1) lines.push("    environment: production");
     const produces = registry.get(options.database)!.descriptor.produces.find((c) => c.secret);
-    if (produces) {
+    if (produces || isNativeD1) {
       lines.push(
         "",
         "bindings:",
-        "  DATABASE_URL:",
-        `    from: resources.database.${produces.capability}`,
-        "    to: application.productionEnvironment",
+        ...(isNativeD1
+          ? [
+              "  BAHAMA_API_BASE_URL:",
+              "    from: environments.production.developmentApiBaseUrl",
+              "    to: environments.local.variables",
+              "  BAHAMA_PROJECT_SLUG:",
+              "    from: environments.production.developmentProjectSlug",
+              "    to: environments.local.variables",
+              "  BAHAMA_DEV_TOKEN:",
+              "    from: environments.production.developmentToken",
+              "    to: environments.local.variables",
+            ]
+          : [
+              "  DATABASE_URL:",
+              `    from: resources.database.${produces!.capability}`,
+              "    to:",
+              "      - environments.local.variables",
+              "      - environments.production.variables",
+            ]),
       );
     }
   }

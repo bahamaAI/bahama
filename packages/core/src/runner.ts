@@ -23,6 +23,9 @@ export class SafeRunner implements SubprocessRunner {
   ) {}
 
   async run(command: string, args: string[], options: RunOptions = {}): Promise<RunResult> {
+    if (options.captureSecretStdout && options.captureSecretJson) {
+      throw new Error("captureSecretStdout and captureSecretJson are mutually exclusive");
+    }
     const secretRef: SecretRef | undefined = options.secretStdin;
 
     const execute = async (input?: string): Promise<RunResult> => {
@@ -84,12 +87,19 @@ export class SafeRunner implements SubprocessRunner {
     options: RunOptions,
   ): RunResult {
     let secret: SecretRef | undefined;
+    let stdout = rawStdout;
     if (options.captureSecretStdout && rawStdout.trim() !== "") {
       secret = this.deps.broker.seal(options.captureSecretStdout.name, rawStdout.trim());
+    } else if (options.captureSecretJson && rawStdout.trim() !== "") {
+      const captured = captureJsonSecret(rawStdout, options.captureSecretJson);
+      stdout = captured.stdout;
+      if (captured.value !== undefined) {
+        secret = this.deps.broker.seal(options.captureSecretJson.name, captured.value);
+      }
     }
     return {
       exitCode,
-      stdout: this.deps.redactor.redact(rawStdout),
+      stdout: this.deps.redactor.redact(stdout),
       stderr: this.deps.redactor.redact(rawStderr),
       timedOut,
       ...(secret !== undefined ? { secret } : {}),
@@ -113,4 +123,34 @@ export class SafeRunner implements SubprocessRunner {
     }
     return null;
   }
+}
+
+function captureJsonSecret(
+  raw: string,
+  capture: { name: string; path: Array<string | number> },
+): { stdout: string; value?: string } {
+  let document: unknown;
+  try {
+    document = JSON.parse(raw);
+  } catch {
+    // The caller declared this stream may contain a secret. Fail closed rather
+    // than returning unparseable raw output to provider code or diagnostics.
+    return { stdout: `[redacted:invalid-json:${capture.name}]` };
+  }
+
+  let cursor: unknown = document;
+  for (let index = 0; index < capture.path.length - 1; index += 1) {
+    const segment = capture.path[index]!;
+    if (typeof cursor !== "object" || cursor === null) return { stdout: JSON.stringify(document) };
+    cursor = (cursor as Record<string | number, unknown>)[segment];
+  }
+  const leaf = capture.path.at(-1);
+  if (leaf === undefined || typeof cursor !== "object" || cursor === null) {
+    return { stdout: JSON.stringify(document) };
+  }
+  const container = cursor as Record<string | number, unknown>;
+  const value = container[leaf];
+  if (typeof value !== "string" || value.trim() === "") return { stdout: JSON.stringify(document) };
+  container[leaf] = `[redacted:${capture.name}]`;
+  return { stdout: JSON.stringify(document), value: value.trim() };
 }

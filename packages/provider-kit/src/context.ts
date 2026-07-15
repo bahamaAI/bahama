@@ -27,6 +27,12 @@ export interface RunOptions {
    * already redacted and `secret` carries the sealed handle.
    */
   captureSecretStdout?: { name: string };
+  /**
+   * Extract one string field from JSON stdout, seal it at capture, and replace
+   * it with a redacted marker before the driver sees the remaining document.
+   * Useful when a CLI returns resource metadata and a credential together.
+   */
+  captureSecretJson?: { name: string; path: Array<string | number> };
   timeoutMs?: number;
 }
 
@@ -82,7 +88,7 @@ export interface Logger {
  * token is still fresh) instead of caching a token across a long operation.
  */
 export interface CredentialSource {
-  freshToken(): Promise<SecretRef | null>;
+  freshToken(options?: { forceRefresh?: boolean }): Promise<SecretRef | null>;
 }
 
 /** The injected execution context handed to every driver method. */

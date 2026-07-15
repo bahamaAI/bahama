@@ -35,3 +35,19 @@ export interface BindingEdge {
   to: CapabilityAddress;
   secret: boolean;
 }
+
+export interface AppliedBinding {
+  name: string;
+  from: string;
+  to: string;
+}
+
+/** Canonical manifest spelling for an internal capability address. */
+export function formatCapabilityAddress(address: CapabilityAddress): string {
+  if (address.resourceKey.startsWith("environment.")) {
+    return `environments.${address.resourceKey.slice("environment.".length)}.${address.capability}`;
+  }
+  return address.resourceKey === "application"
+    ? `application.${address.capability}`
+    : `resources.${address.resourceKey}.${address.capability}`;
+}

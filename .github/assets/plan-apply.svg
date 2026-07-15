@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 444" width="760" height="444" role="img" aria-label="Demo: you ask your agent for Postgres and a deployment, the agent plans it with Bahama, you approve, and your app goes live at a real URL">
+  <style>
+    text {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 14px;
+      fill: #b7c4d1;
+      white-space: pre;
+    }
+    .you { fill: #17c6ae; font-weight: 600; }
+    .agent { fill: #a78bfa; font-weight: 600; }
+    .hi { fill: #e6edf3; }
+    .ok { fill: #17c6ae; }
+    .warn { fill: #e3b341; }
+    .dim { fill: #5d6f83; }
+    .title { fill: #55657a; font-size: 12px; }
+  </style>
+
+  <rect x="0.5" y="0.5" width="759" height="443" rx="12" fill="#0c131d" stroke="#263243"/>
+  <circle cx="26" cy="24" r="6" fill="#f45c57" opacity="0.9"/>
+  <circle cx="46" cy="24" r="6" fill="#f0b62f" opacity="0.9"/>
+  <circle cx="66" cy="24" r="6" fill="#39c26d" opacity="0.9"/>
+  <text class="title" x="380" y="28" text-anchor="middle">you · your agent · bahama</text>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.025;0.043;0.95;1"/>
+    <text x="28" y="74"><tspan class="you">you</tspan><tspan class="dim"> ▸ </tspan><tspan class="hi">Add Postgres to this app, then get it live so I can share it.</tspan></text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.09;0.108;0.95;1"/>
+    <text x="28" y="106"><tspan class="agent">agent</tspan><tspan class="dim"> ▸ </tspan>On it — building the plan now…</text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.14;0.158;0.95;1"/>
+    <text x="44" y="132" class="dim">$ bahama plan</text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.19;0.208;0.95;1"/>
+    <text x="44" y="162">Plan — <tspan class="warn">3 changes</tspan> need your approval:</text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.22;0.238;0.95;1"/>
+    <text x="60" y="190"><tspan class="warn">!</tspan> Create a Postgres database <tspan class="dim">(Neon · community-notes)</tspan></text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.25;0.268;0.95;1"/>
+    <text x="60" y="214"><tspan class="warn">!</tspan> Give the app <tspan class="hi">DATABASE_URL</tspan> in local dev</text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.28;0.298;0.95;1"/>
+    <text x="60" y="238"><tspan class="warn">!</tspan> Deploy to production with <tspan class="hi">DATABASE_URL</tspan> <tspan class="dim">(Bahama Cloud)</tspan></text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.38;0.398;0.95;1"/>
+    <text x="28" y="270"><tspan class="you">you</tspan><tspan class="dim"> ▸ </tspan><tspan class="hi">Looks right — go ahead.</tspan></text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.44;0.458;0.95;1"/>
+    <text x="44" y="298" class="dim">$ bahama apply --approved</text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.5;0.518;0.95;1"/>
+    <text x="44" y="326"><tspan class="ok">✓</tspan> Database created</text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.55;0.568;0.95;1"/>
+    <text x="44" y="350"><tspan class="ok">✓</tspan> Secrets wired <tspan class="dim">(values never shown)</tspan></text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.6;0.618;0.95;1"/>
+    <text x="44" y="374"><tspan class="ok">✓</tspan> App deployed and verified</text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" dur="20s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.67;0.688;0.95;1"/>
+    <text x="28" y="410"><tspan class="agent">agent</tspan><tspan class="dim"> ▸ </tspan>Done — your app is live at <tspan class="ok">https://community-notes.bahama.app</tspan></text>
+    <rect x="638" y="398" width="9" height="16" fill="#a78bfa">
+      <animate attributeName="opacity" dur="1.2s" repeatCount="indefinite" values="1;1;0;0;1" keyTimes="0;0.45;0.5;0.95;1"/>
+    </rect>
+  </g>
+</svg>

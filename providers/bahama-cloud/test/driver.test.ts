@@ -26,7 +26,9 @@ type Handler = (req: HttpRequest) => CannedResponse | undefined;
 function makeCtx(
   root: string,
   handler: Handler,
-  credentials?: { freshToken(): Promise<SecretRef | null> },
+  credentials?: {
+    freshToken(options?: { forceRefresh?: boolean }): Promise<SecretRef | null>;
+  },
 ): { ctx: ProviderContext; requests: HttpRequest[] } {
   const requests: HttpRequest[] = [];
   const values = new Map<string, string>();
@@ -226,6 +228,41 @@ describe("probe", () => {
 });
 
 describe("plan", () => {
+  it("reconciles Cloud resources and local SDK access without deploying code", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => undefined);
+    const environment: ResourceIntent = {
+      resourceKey: "environment.production",
+      role: "environment",
+      environment: "production",
+      framework: "vite-hono",
+      projectName: "my-app",
+      config: {},
+    };
+    const developmentBindings = [
+      ["BAHAMA_API_BASE_URL", "developmentApiBaseUrl"],
+      ["BAHAMA_PROJECT_SLUG", "developmentProjectSlug"],
+      ["BAHAMA_DEV_TOKEN", "developmentToken"],
+    ].map(([name, capability]) => ({
+      name: name!,
+      from: { resourceKey: environment.resourceKey, capability: capability! },
+      to: { resourceKey: "environment.local", capability: "variables" },
+      secret: capability === "developmentToken",
+    }));
+    const contribution = await bahamaCloudProvider.plan(ctx, planRequest({
+      intent: [environment, DB_INTENT],
+      operation: { kind: "reconcile" },
+      bindings: developmentBindings,
+      probe: probed({ "environment.production": { exists: false }, database: { exists: false } }),
+    }));
+    expect(contribution.steps.some((step) => step.action === "cloud.app.deploy")).toBe(false);
+    expect(contribution.steps.find((step) => step.action === "cloud.dev-access.create")?.produces).toEqual([
+      "developmentApiBaseUrl",
+      "developmentProjectSlug",
+      "developmentToken",
+    ]);
+  });
+
   it("contributes ensure, database, deploy, and verify steps with the expected shapes", async () => {
     const root = await scratchDir();
     const { ctx } = makeCtx(root, () => undefined);
@@ -241,7 +278,7 @@ describe("plan", () => {
     expect(byId.get("application-ensure")).toMatchObject({
       action: "cloud.project.ensure",
       effects: { createsResource: true },
-      inputs: { slug: "my-app", framework: "vite-hono", withDatabase: true },
+      inputs: { slug: "my-app", framework: "vite-hono", withDatabase: false },
     });
     expect(byId.get("database-ensure")).toMatchObject({
       action: "cloud.database.ensure",
@@ -305,14 +342,17 @@ describe("token refresh", () => {
     delete process.env["BAHAMA_TOKEN"];
     process.env["BAHAMA_CONFIG_DIR"] = root; // empty dir: no credentials.json
 
-    const issued: string[] = [];
+    const issued: Array<{ token: string; forceRefresh: boolean }> = [];
+    let currentToken = "expired-token";
     const holder: { ctx?: ProviderContext } = {};
     const credentials = {
-      async freshToken(): Promise<SecretRef | null> {
-        // First call hands out an expired token; every later call a fresh one
-        // (this is exactly what the CLI's freshCloudToken does after refresh).
-        const raw = issued.length === 0 ? "expired-token" : "fresh-token";
-        issued.push(raw);
+      async freshToken(options?: { forceRefresh?: boolean }): Promise<SecretRef | null> {
+        // Match the real supplier contract: a cached token remains cached
+        // unless the provider explicitly forces refresh after a 401.
+        const forceRefresh = options?.forceRefresh === true;
+        if (forceRefresh) currentToken = "fresh-token";
+        const raw = currentToken;
+        issued.push({ token: raw, forceRefresh });
         return holder.ctx!.secrets.seal("bahama-cloud.accessToken", raw);
       },
     };
@@ -334,8 +374,9 @@ describe("token refresh", () => {
     );
     expect(outcome.status).toBe("succeeded");
     // One 401, then the refreshed token succeeded — never more than one retry.
-    expect(issued[0]).toBe("expired-token");
-    expect(issued.length).toBeGreaterThanOrEqual(2);
+    expect(issued[0]).toEqual({ token: "expired-token", forceRefresh: false });
+    expect(issued[1]).toEqual({ token: "fresh-token", forceRefresh: true });
+    expect(issued.slice(2).every((entry) => entry.token === "fresh-token" && !entry.forceRefresh)).toBe(true);
     expect(requests.some((req) => req.headers?.["authorization"] === "Bearer fresh-token")).toBe(true);
   });
 });
@@ -444,6 +485,56 @@ describe("execute cloud.database.ensure", () => {
     expect(requests.some((r) => r.method === "PATCH")).toBe(true);
     expect(requests.some((r) => r.url.endsWith("/database/provision"))).toBe(true);
     expect(JSON.stringify(outcome)).not.toContain(TOKEN);
+  });
+});
+
+describe("local-first bindings", () => {
+  it("writes an externally produced secret through the project secret API without returning it", async () => {
+    const root = await scratchDir();
+    const raw = "postgres://user:password@example.test/db";
+    const { ctx, requests } = makeCtx(root, (req) =>
+      req.method === "PUT" && req.url === `${BASE}/api/projects/my-app/secrets`
+        ? { status: 200, body: { ok: true, secret: { name: "LOG_DATABASE_URL" } } }
+        : undefined,
+    );
+    const secret = ctx.secrets.seal("logs.connectionUrl", raw);
+    const outcome = await bahamaCloudProvider.execute(
+      ctx,
+      planned({ action: "cloud.secret.set", inputs: { slug: "my-app", bindingName: "LOG_DATABASE_URL" } }),
+      { consumed: { "resources.logs.connectionUrl": secret } },
+    );
+    expect(outcome).toMatchObject({ status: "succeeded", postconditionVerified: true, receipt: { name: "LOG_DATABASE_URL" } });
+    expect(requests[0]!.body).toEqual({ name: "LOG_DATABASE_URL", value: raw });
+    expect(JSON.stringify(outcome)).not.toContain(raw);
+  });
+
+  it("turns the Cloud dev-token response into three capabilities and keeps the token sealed", async () => {
+    const root = await scratchDir();
+    const raw = "bahama_dev_public_secret";
+    const { ctx } = makeCtx(root, (req) =>
+      req.method === "POST" && req.url === `${BASE}/api/projects/my-app/dev-tokens`
+        ? {
+            status: 201,
+            body: {
+              ok: true,
+              devToken: { publicId: "public", expiresAt: "2026-08-01T00:00:00Z" },
+              env: { BAHAMA_API_BASE_URL: BASE, BAHAMA_PROJECT_SLUG: "my-app", BAHAMA_DEV_TOKEN: raw },
+            },
+          }
+        : undefined,
+    );
+    const outcome = await bahamaCloudProvider.execute(
+      ctx,
+      planned({ action: "cloud.dev-access.create", inputs: { slug: "my-app" } }),
+      { consumed: {} },
+    );
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      produced: { developmentApiBaseUrl: BASE, developmentProjectSlug: "my-app" },
+      receipt: { publicId: "public" },
+    });
+    expect((outcome.produced?.["developmentToken"] as SecretRef).name).toBe("bahama-cloud.developmentToken");
+    expect(JSON.stringify(outcome)).not.toContain(raw);
   });
 });
 

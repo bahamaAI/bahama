@@ -5,6 +5,8 @@ import { zipSync } from "fflate";
 import { z } from "zod";
 import {
   defineProvider,
+  formatCapabilityAddress,
+  isSecretRef,
   type ContributedStep,
   type ExecutionInputs,
   type HttpResponse,
@@ -23,7 +25,7 @@ import {
 
 /**
  * Bahama Cloud driver: talks to the hosted control plane over REST with an
- * OAuth bearer token. Never MCP. The control plane owns Cloudflare
+ * OAuth bearer token. Never MCP. The control plane owns deployment
  * orchestration; this driver only creates/adopts projects by slug, provisions
  * the optional D1 database, and runs the upload → deploy → poll pipeline.
  */
@@ -148,12 +150,12 @@ function readTokenFile(): string | null {
  * source (which refreshes a stale stored token), then the raw credentials
  * file as a last resort for embedders without a credential source.
  */
-async function freshToken(ctx: ProviderContext): Promise<SecretRef | null> {
+async function freshToken(ctx: ProviderContext, forceRefresh = false): Promise<SecretRef | null> {
   const fromEnv = process.env["BAHAMA_TOKEN"];
   if (fromEnv && fromEnv.trim() !== "") {
     return ctx.secrets.seal("bahama-cloud.accessToken", fromEnv.trim());
   }
-  if (ctx.credentials) return ctx.credentials.freshToken();
+  if (ctx.credentials) return ctx.credentials.freshToken({ forceRefresh });
   const raw = readTokenFile();
   return raw ? ctx.secrets.seal("bahama-cloud.accessToken", raw) : null;
 }
@@ -175,7 +177,7 @@ const UNAUTHENTICATED: HttpResponse = {
  */
 async function api(
   ctx: ProviderContext,
-  method: "GET" | "POST" | "PATCH",
+  method: "GET" | "POST" | "PUT" | "PATCH",
   path: string,
   body?: JsonObject,
 ): Promise<HttpResponse> {
@@ -193,7 +195,7 @@ async function api(
   if (!token) return UNAUTHENTICATED;
   const first = await send(token);
   if (first.status !== 401) return first;
-  const refreshed = await freshToken(ctx);
+  const refreshed = await freshToken(ctx, true);
   if (!refreshed) return first;
   return send(refreshed);
 }
@@ -644,15 +646,75 @@ async function verifyApplication(
   };
 }
 
+async function setProjectSecret(
+  ctx: ProviderContext,
+  slug: string,
+  step: PlannedStep,
+  inputs: ExecutionInputs,
+): Promise<StepOutcome> {
+  const name = step.inputs?.["bindingName"];
+  const value = Object.values(inputs.consumed)[0];
+  if (typeof name !== "string" || value === undefined) {
+    return fail(`Step ${step.id} is missing a binding input.`);
+  }
+  if (!isSecretRef(value) && typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+    return fail(`Step ${step.id} received a non-scalar environment value.`);
+  }
+  const ref = isSecretRef(value) ? value : ctx.secrets.seal(`env.${name}`, String(value));
+  return ctx.secrets.use(ref, async (raw) => {
+    const response = await api(ctx, "PUT", `/api/projects/${slug}/secrets`, { name, value: raw });
+    if (response.status === 401) return authFail();
+    if (response.status !== 200) return fail(apiError(`Setting project secret ${name}`, response));
+    const metadata = parseJson<{ secret?: { name?: string } }>(response)?.secret;
+    const verified = metadata?.name === name;
+    return {
+      status: verified ? "succeeded" : "failed",
+      postconditionVerified: verified,
+      receipt: { slug, name },
+      ...(verified ? {} : { error: { message: `Secret ${name} was not present after update.` } }),
+    };
+  });
+}
+
+async function createDevelopmentAccess(ctx: ProviderContext, slug: string): Promise<StepOutcome> {
+  const response = await api(ctx, "POST", `/api/projects/${slug}/dev-tokens`, {
+    name: "Bahama CLI local development",
+    expiresInDays: 30,
+  });
+  if (response.status === 401) return authFail();
+  if (response.status !== 201) return fail(apiError("Creating local development access", response));
+  const env = parseJson<{ env?: Record<string, unknown>; devToken?: { publicId?: string; expiresAt?: string } }>(response);
+  const base = env?.env?.["BAHAMA_API_BASE_URL"];
+  const project = env?.env?.["BAHAMA_PROJECT_SLUG"];
+  const token = env?.env?.["BAHAMA_DEV_TOKEN"];
+  if (typeof base !== "string" || typeof project !== "string" || typeof token !== "string") {
+    return fail("Bahama Cloud returned an incomplete local-development credential set.");
+  }
+  return {
+    status: "succeeded",
+    postconditionVerified: true,
+    produced: {
+      developmentApiBaseUrl: base,
+      developmentProjectSlug: project,
+      developmentToken: ctx.secrets.seal("bahama-cloud.developmentToken", token),
+    },
+    receipt: {
+      slug,
+      publicId: env?.devToken?.publicId ?? null,
+      expiresAt: env?.devToken?.expiresAt ?? null,
+    },
+  };
+}
+
 /* -------------------------------- driver --------------------------------- */
 
 export const bahamaCloudProvider = defineProvider({
   descriptor: {
     id: PROVIDER_ID,
     name: "Bahama Cloud",
-    roles: ["application", "database"],
+    roles: ["environment", "application", "database"],
     description:
-      "Managed hosting on the Bahama control plane: zero-config deploys of static, Vite, and Hono apps to Cloudflare's edge, with an optional built-in D1 SQL database.",
+      "Managed hosting on the Bahama control plane: zero-config deploys of static, Vite, and Hono apps to Bahama's edge runtime, with an optional built-in SQL database.",
     useWhen:
       "You want a managed zero-config path for a static site, Vite SPA, Vite + Hono full-stack app, or Hono API, optionally with a built-in D1 database.",
     avoidWhen:
@@ -662,10 +724,16 @@ export const bahamaCloudProvider = defineProvider({
     engines: ["d1"],
     produces: [
       { capability: "productionUrl", secret: false, description: "Public URL of the deployed application." },
+      { capability: "developmentApiBaseUrl", secret: false, description: "Bahama development API origin." },
+      { capability: "developmentProjectSlug", secret: false, description: "Bahama project slug used by the local SDK." },
+      { capability: "developmentToken", secret: true, description: "Scoped token used by the Bahama SDK during local development." },
     ],
     // D1 is an in-runtime Worker binding (`env.DB`), never a connection
     // string — the database resource produces nothing bindable in v0.1.
-    consumes: [],
+    consumes: [
+      { capability: "variables", secret: false, description: "Server-side project environment variables." },
+      { capability: "productionEnvironment", secret: false, description: "Legacy spelling for server-side variables." },
+    ],
   },
 
   intentSchema,
@@ -735,7 +803,7 @@ export const bahamaCloudProvider = defineProvider({
       };
     }
 
-    const appIntent = req.intent.find((intent) => intent.role === "application");
+    const appIntent = req.intent.find((intent) => intent.role === "environment" || intent.role === "application");
     const dbIntent = req.intent.find((intent) => intent.role === "database");
     const lockHas = (resourceKey: string) =>
       req.locked.some((entry) => entry.resourceKey === resourceKey);
@@ -743,14 +811,16 @@ export const bahamaCloudProvider = defineProvider({
       (req.probe.observed[resourceKey] as JsonObject | undefined)?.["exists"] === true;
 
     const steps: ContributedStep[] = [];
+    const appKey = appIntent?.resourceKey;
+    const ensureId = appKey ? `${appKey.replaceAll(".", "-")}-ensure` : null;
     if (appIntent) {
       steps.push({
-        id: "application-ensure",
+        id: ensureId!,
         action: "cloud.project.ensure",
         summary: ensureSummary("project", slug, observedExists(appIntent.resourceKey), lockHas(appIntent.resourceKey)),
         resourceKey: appIntent.resourceKey,
         effects: ensureEffects(observedExists(appIntent.resourceKey), lockHas(appIntent.resourceKey)),
-        inputs: { slug, framework: appIntent.framework ?? null, withDatabase: Boolean(dbIntent) },
+        inputs: { slug, framework: appIntent.framework ?? null, withDatabase: false },
         postcondition: `Project \`${slug}\` exists on Bahama Cloud.`,
       });
     }
@@ -761,20 +831,60 @@ export const bahamaCloudProvider = defineProvider({
         summary: ensureSummary("D1 database", slug, observedExists(dbIntent.resourceKey), lockHas(dbIntent.resourceKey)),
         resourceKey: dbIntent.resourceKey,
         effects: ensureEffects(observedExists(dbIntent.resourceKey), lockHas(dbIntent.resourceKey)),
-        ...(appIntent ? { dependsOn: ["application-ensure"] } : {}),
+        ...(ensureId ? { dependsOn: [ensureId] } : {}),
         inputs: { slug },
         postcondition:
           "The project's D1 database is provisioned and available to the app as the runtime binding `env.DB`.",
       });
     }
-    if (appIntent) {
+    const secretStepIds: string[] = [];
+    if (appIntent && ensureId) {
+      for (const edge of req.bindings.filter((binding) => binding.to.resourceKey === appIntent.resourceKey)) {
+        const id = `${appIntent.resourceKey.replaceAll(".", "-")}-secret-${edge.name.toLowerCase()}`;
+        secretStepIds.push(id);
+        steps.push({
+          id,
+          action: "cloud.secret.set",
+          summary: `Transfer ${edge.name} to the Bahama Cloud environment`,
+          resourceKey: appIntent.resourceKey,
+          effects: { transfersSecret: edge.secret },
+          consumes: [formatCapabilityAddress(edge.from)],
+          dependsOn: [ensureId],
+          inputs: { slug, bindingName: edge.name, bindingTo: formatCapabilityAddress(edge.to) },
+          postcondition: `${edge.name} is present as a server-side Bahama Cloud project secret.`,
+        });
+      }
+
+      const devEdges = req.bindings.filter((binding) => {
+        if (binding.from.resourceKey !== appIntent.resourceKey || !binding.from.capability.startsWith("development")) return false;
+        const from = formatCapabilityAddress(binding.from);
+        const to = formatCapabilityAddress(binding.to);
+        return !(req.appliedBindings ?? []).some((known) => known.name === binding.name && known.from === from && known.to === to);
+      });
+      if (devEdges.length > 0 && req.operation?.kind === "reconcile") {
+        steps.push({
+          id: `${appIntent.resourceKey.replaceAll(".", "-")}-development-access`,
+          action: "cloud.dev-access.create",
+          summary: `Create scoped local-development access for \`${slug}\``,
+          resourceKey: appIntent.resourceKey,
+          effects: { transfersSecret: true },
+          dependsOn: [ensureId, ...(dbIntent ? ["database-ensure"] : [])],
+          inputs: { slug },
+          produces: ["developmentApiBaseUrl", "developmentProjectSlug", "developmentToken"],
+          postcondition: "A scoped Bahama development token is issued for this project.",
+        });
+      }
+    }
+
+    const operation = req.operation ?? { kind: "deploy" as const, environment: appIntent?.environment ?? "production" };
+    if (appIntent && ensureId && operation.kind === "deploy" && operation.environment === (appIntent.environment ?? "production")) {
       steps.push({
-        id: "application-deploy",
+        id: `${appIntent.resourceKey.replaceAll(".", "-")}-deploy`,
         action: "cloud.app.deploy",
         summary: `Package the source and deploy \`${slug}\` to Bahama Cloud`,
         resourceKey: appIntent.resourceKey,
         effects: { deploys: true },
-        dependsOn: ["application-ensure", ...(dbIntent ? ["database-ensure"] : [])],
+        dependsOn: [ensureId, ...(dbIntent ? ["database-ensure"] : []), ...secretStepIds],
         inputs: {
           slug,
           framework: appIntent.framework ?? null,
@@ -784,13 +894,13 @@ export const bahamaCloudProvider = defineProvider({
         postcondition: "The deploy job reports `deployed` and the production URL responds.",
       });
       steps.push({
-        id: "application-verify",
+        id: `${appIntent.resourceKey.replaceAll(".", "-")}-verify`,
         action: "cloud.app.verify",
         summary: `Verify \`${slug}\` responds in production`,
         resourceKey: appIntent.resourceKey,
         effects: { readOnly: true },
-        dependsOn: ["application-deploy"],
-        consumes: [`${appIntent.resourceKey}.productionUrl`],
+        dependsOn: [`${appIntent.resourceKey.replaceAll(".", "-")}-deploy`],
+        consumes: [formatCapabilityAddress({ resourceKey: appIntent.resourceKey, capability: "productionUrl" })],
         inputs: { slug },
         postcondition: "A production request returns a non-5xx response.",
       });
@@ -809,6 +919,10 @@ export const bahamaCloudProvider = defineProvider({
         return ensureProject(ctx, slug, step);
       case "cloud.database.ensure":
         return ensureDatabase(ctx, slug);
+      case "cloud.secret.set":
+        return setProjectSecret(ctx, slug, step, inputs);
+      case "cloud.dev-access.create":
+        return createDevelopmentAccess(ctx, slug);
       case "cloud.app.deploy":
         return deployApplication(ctx, slug, step);
       case "cloud.app.verify":

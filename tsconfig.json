@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/provider-kit" },
+    { "path": "packages/core" },
+    { "path": "packages/cloud-sdk" },
+    { "path": "providers/fake" },
+    { "path": "providers/bahama-cloud" },
+    { "path": "providers/vercel" },
+    { "path": "providers/neon" },
+    { "path": "providers/local" },
+    { "path": "packages/cli" }
+  ]
+}

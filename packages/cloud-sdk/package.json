@@ -1,0 +1,32 @@
+{
+  "name": "@bahama-ai/cloud-sdk",
+  "version": "0.1.2",
+  "description": "Server-side helpers for Bahama Cloud resources across local development and the native production runtime.",
+  "homepage": "https://www.bahama.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bahamaAI/bahama.git",
+    "directory": "packages/cloud-sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/bahamaAI/bahama/issues"
+  },
+  "type": "module",
+  "main": "./dist/server.js",
+  "types": "./dist/server.d.ts",
+  "exports": {
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    }
+  },
+  "files": ["dist", "LICENSE", "README.md"],
+  "scripts": {
+    "build": "tsc -b",
+    "prepack": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}

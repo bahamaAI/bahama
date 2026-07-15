@@ -5,7 +5,7 @@ import type { CapabilitySpec } from "./capabilities.js";
  * `service` covers future non-hosting providers (payments, auth, email)
  * without a kit rewrite.
  */
-export type ProviderRole = "application" | "database" | "service";
+export type ProviderRole = "environment" | "application" | "database" | "service";
 
 export interface TestedToolVersion {
   tool: string;

@@ -91,6 +91,24 @@ describe("planning", () => {
       }),
     ).toThrow(/bahama\.lock/);
   });
+
+  it("rejects legacy application binding addresses in an environment manifest", () => {
+    expect(() =>
+      validateManifest({
+        version: 1,
+        project: { name: "x" },
+        application: { framework: "fake-framework" },
+        environments: { production: { provider: "fake" } },
+        resources: { database: { provider: "fake", engine: "fakedb" } },
+        bindings: {
+          DATABASE_URL: {
+            from: "resources.database.connectionUrl",
+            to: "application.productionEnvironment",
+          },
+        },
+      }),
+    ).toThrow(/legacy address/);
+  });
 });
 
 describe("apply and receipts", () => {
@@ -194,6 +212,15 @@ describe("apply and receipts", () => {
     await writeFile(join(root, "index.ts"), "export const x = 1;\n");
     const outcome = await apply(root, first.plan.planId);
     expect(outcome.kind).toBe("succeeded");
+  });
+
+  it("rejects a plan when provider configuration changes after review", async () => {
+    const root = await makeProject();
+    const first = expectPlan(await plan(root));
+    await writeFile(join(root, "vercel.json"), JSON.stringify({ rewrites: [{ source: "/x", destination: "/y" }] }));
+    const outcome = await apply(root, first.plan.planId, true);
+    expect(outcome.kind).toBe("stale");
+    if (outcome.kind === "stale") expect(outcome.message).toContain("Provider configuration changed");
   });
 
   it("rejects a plan when the manifest changes (intent drift = stale plan)", async () => {

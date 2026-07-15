@@ -137,7 +137,7 @@ function planned(partial: Partial<PlannedStep> & { action: string }): PlannedSte
     classification: "routine",
     dependsOn: [],
     resourceKey: "application",
-    inputs: { name: "my-app", scope: null },
+    inputs: { name: "my-app", scope: null, framework: "nextjs" },
     ...partial,
   };
 }
@@ -146,11 +146,36 @@ async function scratchDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "vercel-test-"));
 }
 
-const PROJECT_JSON = JSON.stringify({ id: "prj_123", name: "my-app", accountId: "team_acme" });
+const PROJECT_JSON = JSON.stringify({
+  id: "prj_123",
+  name: "my-app",
+  accountId: "team_acme",
+  framework: "nextjs",
+  targets: { production: { alias: ["my-app.vercel.app"] } },
+});
 const USER_JSON = JSON.stringify({ user: { uid: "user_1", username: "andrew" } });
+const TEAMS_JSON = JSON.stringify({
+  teams: [
+    {
+      id: "team_personal",
+      slug: "andrews-projects",
+      name: "Andrew's projects",
+      createdDirectToHobby: true,
+    },
+    { id: "team_acme", slug: "acme", name: "Acme Inc" },
+  ],
+});
 const line = (args: string[]) => args.join(" ");
 
 describe("probe", () => {
+  it("declares delegated interactive login and logout", () => {
+    expect(vercelProvider.authCommands).toEqual({
+      executables: ["vercel"],
+      loginArgs: ["login"],
+      logoutArgs: ["logout"],
+    });
+  });
+
   it("reports the tool as missing with an install hint", async () => {
     const root = await scratchDir();
     const { ctx } = makeCtx(root, () => undefined, { which: () => null });
@@ -176,18 +201,29 @@ describe("probe", () => {
     const { ctx } = makeCtx(root, (cmd, args) => {
       if (line(args) === "--version") return { stdout: "39.4.2" };
       if (line(args) === "whoami") return { stdout: "andrew\n" };
-      if (line(args) === "teams list")
-        return { stdout: "id            name\n✔ acme        Acme Inc\n  personal    Andrew\n" };
       if (line(args) === "api /v2/user") return { stdout: USER_JSON };
+      if (line(args) === "api /v2/teams?limit=100") return { stdout: TEAMS_JSON };
       if (line(args) === "api /v9/projects/my-app") return { stdout: PROJECT_JSON };
       return undefined;
     });
     const result = await vercelProvider.probe(ctx, { intent: [APP_INTENT], locked: [] });
     expect(result.auth).toMatchObject({ state: "authenticated", identity: "andrew" });
     // The durable USER id, not the username, is what the lock will record.
-    expect(result.auth.account).toEqual({ id: "user_1", label: "andrew", kind: "personal" });
-    expect(result.accounts.map((a) => a.id)).toEqual(["acme", "personal"]);
-    expect(result.observed["application"]).toEqual({ exists: true, projectId: "prj_123" });
+    expect(result.auth.account).toBeUndefined();
+    expect(result.accounts).toEqual([
+      {
+        id: "team_personal",
+        label: "Andrew's projects",
+        kind: "personal",
+        selector: "andrews-projects",
+      },
+      { id: "team_acme", label: "Acme Inc", kind: "team", selector: "acme" },
+    ]);
+    expect(result.observed["application"]).toEqual({
+      exists: true,
+      projectId: "prj_123",
+      framework: "nextjs",
+    });
   });
 
   it("uses the configured team scope as the durable account", async () => {
@@ -195,7 +231,12 @@ describe("probe", () => {
     const { ctx } = makeCtx(root, (cmd, args) => {
       if (line(args) === "--version") return { stdout: "39.4.2" };
       if (line(args) === "whoami") return { stdout: "andrew\n" };
-      if (line(args) === "teams list") return { stdout: "id            name\n✔ acme        Acme Inc\n" };
+      if (line(args) === "api /v2/user") return { stdout: USER_JSON };
+      if (line(args) === "api /v2/teams?limit=100") {
+        return {
+          stdout: JSON.stringify({ teams: [{ id: "team_acme", slug: "acme", name: "Acme Inc" }] }),
+        };
+      }
       if (line(args) === "api /v9/projects/my-app --scope acme") return { stdout: PROJECT_JSON };
       return undefined;
     });
@@ -203,7 +244,12 @@ describe("probe", () => {
       intent: [{ ...APP_INTENT, config: { scope: "acme" } }],
       locked: [],
     });
-    expect(result.auth.account).toEqual({ id: "acme", label: "Acme Inc", kind: "team" });
+    expect(result.auth.account).toEqual({
+      id: "team_acme",
+      label: "Acme Inc",
+      kind: "team",
+      selector: "acme",
+    });
   });
 
   it("warns when .vercel/project.json disagrees with the lock (the lock wins)", async () => {
@@ -216,8 +262,8 @@ describe("probe", () => {
     const { ctx } = makeCtx(root, (cmd, args) => {
       if (line(args) === "--version") return { stdout: "39.4.2" };
       if (line(args) === "whoami") return { stdout: "andrew\n" };
-      if (line(args) === "teams list") return { exitCode: 1, stderr: "nope" };
       if (line(args) === "api /v2/user") return { stdout: USER_JSON };
+      if (line(args) === "api /v2/teams?limit=100") return { stdout: JSON.stringify({ teams: [] }) };
       if (line(args) === "api /v9/projects/prj_lock") return { stdout: PROJECT_JSON };
       return undefined;
     });
@@ -250,7 +296,7 @@ describe("teams and URL parsing", () => {
 });
 
 describe("plan", () => {
-  it("returns a scope decision when multiple teams and no config.scope", async () => {
+  it("offers personal and team accounts when no project scope is selected", async () => {
     const root = await scratchDir();
     const { ctx } = makeCtx(root, () => undefined);
     const contribution = await vercelProvider.plan(
@@ -258,8 +304,8 @@ describe("plan", () => {
       planRequest({
         probe: probed({
           accounts: [
-            { id: "acme", label: "Acme Inc", kind: "team" },
-            { id: "personal", label: "Andrew", kind: "team" },
+            { id: "user_1", label: "Andrew", kind: "personal", selector: "personal" },
+            { id: "team_acme", label: "Acme Inc", kind: "team", selector: "acme" },
           ],
         }),
       }),
@@ -267,8 +313,10 @@ describe("plan", () => {
     expect(contribution.steps).toEqual([]);
     expect(contribution.decisions![0]).toMatchObject({
       kind: "decision",
+      question: "Which Vercel account should own this application?",
       writeBack: "application.config.scope",
     });
+    expect(contribution.decisions![0]!.options.map((option) => option.id)).toEqual(["personal", "acme"]);
   });
 
   it("contributes ensure, one env step per binding, deploy, and verify", async () => {
@@ -286,7 +334,7 @@ describe("plan", () => {
     expect(byId.get("application-ensure")).toMatchObject({
       action: "vercel.project.ensure",
       effects: { createsResource: true },
-      inputs: { name: "my-app", scope: null },
+      inputs: { name: "my-app", scope: null, framework: "nextjs" },
     });
     expect(byId.get("application-env-database_url")).toMatchObject({
       action: "vercel.env.set",
@@ -327,9 +375,78 @@ describe("plan", () => {
     );
     expect(locked.steps[0]!.effects).toEqual({ readOnly: true });
   });
+
+  it("plans a consequential configuration change when Vercel has the wrong framework preset", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => undefined);
+    const contribution = await vercelProvider.plan(
+      ctx,
+      planRequest({
+        probe: probed({ observed: { application: { exists: true, projectId: "prj_123", framework: "static-site" } } }),
+        locked: [{ resourceKey: "application", identity: { projectId: "prj_123" } }],
+      }),
+    );
+    expect(contribution.steps[0]).toMatchObject({
+      summary: "Set the Vercel framework preset for `my-app`",
+      effects: { changesConfiguration: true },
+      inputs: { framework: "nextjs" },
+    });
+  });
+
+  it("drops a confirmed-missing locked id from every replacement step", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => undefined);
+    const contribution = await vercelProvider.plan(
+      ctx,
+      planRequest({
+        probe: probed({
+          auth: {
+            state: "authenticated",
+            identity: "andrew",
+            account: { id: "user_1", label: "andrew", kind: "personal", selector: "personal" },
+          },
+          accounts: [{ id: "user_1", label: "andrew", kind: "personal", selector: "personal" }],
+          observed: { application: { exists: false } },
+        }),
+        locked: [
+          { resourceKey: "application", accountId: "user_1", identity: { projectId: "prj_deleted" } },
+        ],
+      }),
+    );
+    expect(contribution.steps[0]).toMatchObject({ effects: { createsResource: true } });
+    for (const step of contribution.steps) {
+      expect(step.inputs?.["projectId"]).toBeNull();
+    }
+  });
 });
 
 describe("execute vercel.project.ensure", () => {
+  it("treats Vercel CLI 55 human stderr 404 as an absent project", async () => {
+    const root = await scratchDir();
+    let created = false;
+    const { ctx, calls } = makeCtx(root, (cmd, args) => {
+      if (line(args) === "api /v9/projects/my-app") {
+        return created
+          ? { stdout: PROJECT_JSON }
+          : {
+              exitCode: 1,
+              stderr:
+                "Vercel CLI 55.0.0 (Node.js 22.18.0)\napi is in beta — https://vercel.com/feedback\nError: Project not found. (404)",
+            };
+      }
+      if (line(args) === "project add my-app") {
+        created = true;
+        return { stdout: "Success!" };
+      }
+      return undefined;
+    });
+    const outcome = await vercelProvider.execute(ctx, planned({ action: "vercel.project.ensure" }), {
+      consumed: {},
+    });
+    expect(outcome.status).toBe("succeeded");
+    expect(calls.some((call) => line(call.args) === "project add my-app")).toBe(true);
+  });
+
   it("creates the project when the api lookup reports not_found, then verifies", async () => {
     const root = await scratchDir();
     let created = false;
@@ -365,11 +482,72 @@ describe("execute vercel.project.ensure", () => {
     });
     const outcome = await vercelProvider.execute(
       ctx,
-      planned({ action: "vercel.project.ensure", inputs: { name: "my-app", scope: "acme" } }),
+      planned({
+        action: "vercel.project.ensure",
+        inputs: { name: "my-app", scope: "acme", framework: "nextjs" },
+      }),
       { consumed: {} },
     );
     expect(outcome).toMatchObject({ status: "succeeded", receipt: { existed: true } });
     expect(calls.every((call) => call.args[0] !== "project")).toBe(true);
+  });
+
+  it("updates and verifies the provider-native framework preset", async () => {
+    const root = await scratchDir();
+    let framework = "other";
+    const { ctx, calls } = makeCtx(root, (cmd, args) => {
+      if (line(args) === "api /v9/projects/my-app" || line(args) === "api /v9/projects/prj_123") {
+        return {
+          stdout: JSON.stringify({
+            id: "prj_123",
+            name: "my-app",
+            accountId: "team_acme",
+            framework,
+          }),
+        };
+      }
+      if (line(args) === "api /v9/projects/prj_123 -X PATCH -F framework=nextjs") {
+        framework = "nextjs";
+        return { stdout: JSON.stringify({ id: "prj_123", framework }) };
+      }
+      return undefined;
+    });
+    const outcome = await vercelProvider.execute(ctx, planned({ action: "vercel.project.ensure" }), {
+      consumed: {},
+    });
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      postconditionVerified: true,
+      receipt: { framework: "nextjs" },
+    });
+    expect(
+      calls.some((call) => line(call.args) === "api /v9/projects/prj_123 -X PATCH -F framework=nextjs"),
+    ).toBe(true);
+  });
+
+  it("uses null to select Vercel Other for a static site", async () => {
+    const root = await scratchDir();
+    let framework: string | null = "nextjs";
+    const { ctx, calls } = makeCtx(root, (cmd, args) => {
+      if (line(args) === "api /v9/projects/my-app" || line(args) === "api /v9/projects/prj_123") {
+        return { stdout: JSON.stringify({ id: "prj_123", name: "my-app", accountId: "team_acme", framework }) };
+      }
+      if (line(args) === "api /v9/projects/prj_123 -X PATCH -F framework=null") {
+        framework = null;
+        return { stdout: JSON.stringify({ id: "prj_123", framework }) };
+      }
+      return undefined;
+    });
+    const outcome = await vercelProvider.execute(
+      ctx,
+      planned({
+        action: "vercel.project.ensure",
+        inputs: { name: "my-app", scope: null, framework: "static-site" },
+      }),
+      { consumed: {} },
+    );
+    expect(outcome.status).toBe("succeeded");
+    expect(calls.some((call) => line(call.args).endsWith("-F framework=null"))).toBe(true);
   });
 });
 
@@ -470,7 +648,10 @@ describe("execute vercel.deploy", () => {
     const { ctx } = makeCtx(
       root,
       (cmd, args, options) => {
-        if (line(args) === "api /v9/projects/my-app") return { stdout: PROJECT_JSON };
+        if (
+          line(args) === "api /v9/projects/my-app" ||
+          line(args) === "api /v9/projects/prj_123"
+        ) return { stdout: PROJECT_JSON };
         if (line(args) === "deploy --prod --yes") {
           expect(options?.cwd).toBe(root);
           // The deploy itself is pinned to the planned project via env.
@@ -492,8 +673,7 @@ describe("execute vercel.deploy", () => {
         return undefined;
       },
       {
-        http: (req) =>
-          req.url === "https://my-app-abc123.vercel.app" ? { status: 200, body: {} } : undefined,
+        http: (req) => (req.url === "https://my-app.vercel.app" ? { status: 200, body: {} } : undefined),
       },
     );
     const outcome = await vercelProvider.execute(
@@ -504,7 +684,7 @@ describe("execute vercel.deploy", () => {
     expect(outcome).toMatchObject({
       status: "succeeded",
       postconditionVerified: true,
-      produced: { productionUrl: "https://my-app-abc123.vercel.app" },
+      produced: { productionUrl: "https://my-app.vercel.app" },
       receipt: { deploymentId: "dpl_abc", state: "READY", httpStatus: 200 },
     });
     expect(polls).toBe(2);
@@ -553,7 +733,7 @@ describe("execute vercel.deploy", () => {
           return { stdout: JSON.stringify({ id: "dpl_abc", projectId: "prj_123", readyState: "READY" }) };
         return undefined;
       },
-      { http: (req) => (req.url === "https://my-app-abc.vercel.app" ? { status: 200, body: {} } : undefined) },
+      { http: (req) => (req.url === "https://my-app.vercel.app" ? { status: 200, body: {} } : undefined) },
     );
     const outcome = await vercelProvider.execute(
       ctx,
@@ -566,7 +746,7 @@ describe("execute vercel.deploy", () => {
 });
 
 describe("execute vercel.verify", () => {
-  it("verifies the consumed production URL on a non-5xx response", async () => {
+  it("verifies the consumed production URL on a successful response", async () => {
     const root = await scratchDir();
     const { ctx } = makeCtx(root, () => undefined, {
       http: (req) => (req.url === "https://my-app.vercel.app" ? { status: 200, body: {} } : undefined),
@@ -581,6 +761,20 @@ describe("execute vercel.verify", () => {
       postconditionVerified: true,
       receipt: { httpStatus: 200 },
     });
+  });
+
+  it("rejects a production 404", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => undefined, {
+      http: (req) => (req.url === "https://my-app.vercel.app" ? { status: 404, body: {} } : undefined),
+    });
+    const outcome = await vercelProvider.execute(
+      ctx,
+      planned({ id: "application-verify", action: "vercel.verify" }),
+      { consumed: { "application.productionUrl": "https://my-app.vercel.app" } },
+    );
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error?.message).toContain("404");
   });
 
   it("falls back to the project's production target when nothing was consumed", async () => {

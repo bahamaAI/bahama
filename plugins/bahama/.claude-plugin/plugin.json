@@ -1,7 +1,0 @@
-{
-  "name": "bahama",
-  "version": "0.1.0-alpha.1",
-  "description": "Bahama: agent-native application infrastructure. Installs the bahama-builder skill; all actions go through the open `bahama` CLI. No MCP server.",
-  "author": { "name": "Bahama AI", "url": "https://www.bahama.ai" },
-  "skills": "./skills/"
-}

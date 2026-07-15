@@ -73,6 +73,13 @@ export async function applyPlan(
       message: "bahama.yaml changed after this plan was compiled. Re-run `bahama plan`.",
     };
   }
+  const currentProviderConfig = await providerConfigFingerprints(deps.projectRoot);
+  if (canonicalJson(currentProviderConfig) !== canonicalJson(plan.providerConfigFingerprints)) {
+    return {
+      kind: "stale",
+      message: "Provider configuration changed after this plan was compiled. Re-run `bahama plan`.",
+    };
+  }
   let lock = await loadLock(deps.projectRoot);
   const priorEntries = await readJournal(deps.projectRoot);
   // Resume = the plan's most recent apply never finished. A COMPLETED apply

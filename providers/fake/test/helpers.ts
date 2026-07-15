@@ -63,6 +63,7 @@ export async function plan(root: string): Promise<PlanOutcome> {
     projectRoot: root,
     registry: REGISTRY,
     contextFor: (id) => eng.contextFor(id),
+    operation: { kind: "deploy", environment: "production" },
   });
   if (outcome.kind === "plan") await savePlan(root, outcome.plan);
   return outcome;

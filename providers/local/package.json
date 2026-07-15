@@ -1,0 +1,17 @@
+{
+  "name": "@bahama-ai/provider-local",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "description": "Bahama local-development environment provider.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "README.md"],
+  "scripts": { "build": "tsc -b" },
+  "dependencies": {
+    "@bahama-ai/provider-kit": "0.1.0-alpha.1",
+    "zod": "^3.25.0"
+  }
+}

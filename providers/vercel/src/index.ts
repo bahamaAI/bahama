@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   defineProvider,
+  formatCapabilityAddress,
   isSecretRef,
   type ContributedStep,
   type Decision,
@@ -90,7 +91,7 @@ function resolveName(intent: ResourceIntent): string | null {
 }
 
 function scopeArgs(scope: string | null): string[] {
-  return scope ? ["--scope", scope] : [];
+  return scope && scope !== "personal" ? ["--scope", scope] : [];
 }
 
 function inputString(step: PlannedStep, key: string): string | null {
@@ -140,7 +141,29 @@ export function parseTeamsList(stdout: string): ProviderAccount[] {
     if (cleaned === "") continue;
     const [id, ...rest] = cleaned.split(/\s{2,}|\s+/);
     if (!id) continue;
-    accounts.push({ id, label: rest.length > 0 ? rest.join(" ") : id, kind: "team" });
+    accounts.push({ id, label: rest.length > 0 ? rest.join(" ") : id, kind: "team", selector: id });
+  }
+  return accounts;
+}
+
+function parseTeamsApi(body: JsonObject): ProviderAccount[] {
+  const teams = body["teams"];
+  if (!Array.isArray(teams)) return [];
+  const accounts: ProviderAccount[] = [];
+  for (const value of teams) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const team = value as JsonObject;
+    const id = team["id"];
+    const slug = team["slug"];
+    if (typeof id !== "string" || id === "" || typeof slug !== "string" || slug === "") continue;
+    const name = team["name"];
+    const kind = team["createdDirectToHobby"] === true ? "personal" : "team";
+    accounts.push({
+      id,
+      label: typeof name === "string" && name !== "" ? name : slug,
+      kind,
+      selector: slug,
+    });
   }
   return accounts;
 }
@@ -183,9 +206,41 @@ async function vapi(ctx: ProviderContext, path: string, scope: string | null): P
     return { kind: "ok", json: body };
   }
   if (res.exitCode !== 0) {
+    // Vercel CLI 55 prints REST 404s as human stderr (with its version/banner)
+    // instead of the JSON error body older versions emitted. Absence is an
+    // expected probe result, not a provider failure.
+    const diagnostic = `${res.stdout}\n${res.stderr}`;
+    if (/\bnot found\b.*\(404\)|\b404\b.*\bnot found\b/is.test(diagnostic)) {
+      return { kind: "not-found" };
+    }
     return { kind: "error", message: `vercel api ${path} failed: ${errText(res.stderr, res.stdout)}` };
   }
   return { kind: "error", message: `vercel api ${path} returned no parsable JSON.` };
+}
+
+async function updateProjectFramework(
+  ctx: ProviderContext,
+  projectId: string,
+  scope: string | null,
+  framework: string | null,
+): Promise<ApiResult> {
+  const res = await ctx.run.run(BIN, [
+    "api",
+    `/v9/projects/${encodeURIComponent(projectId)}`,
+    "-X",
+    "PATCH",
+    "-F",
+    `framework=${framework === null ? "null" : framework}`,
+    ...scopeArgs(scope),
+  ]);
+  const parsed = parseJson(res.stdout);
+  if (res.exitCode !== 0 || !parsed || typeof parsed !== "object") {
+    return {
+      kind: "error",
+      message: `Updating the Vercel framework preset failed: ${errText(res.stderr, res.stdout)}`,
+    };
+  }
+  return { kind: "ok", json: parsed as JsonObject };
 }
 
 interface VercelProject {
@@ -193,6 +248,21 @@ interface VercelProject {
   name: string;
   /** Owning account/team id — becomes VERCEL_ORG_ID for mutations. */
   accountId: string | null;
+  /** Vercel's provider-native framework preset. */
+  framework: string | null;
+}
+
+function vercelFramework(framework: string): string | null {
+  if (framework === "nextjs") return "nextjs";
+  if (framework === "vite-spa") return "vite";
+  return null;
+}
+
+function manifestFramework(framework: string | null): string | null {
+  if (framework === "nextjs") return "nextjs";
+  if (framework === "vite") return "vite-spa";
+  if (framework === "other" || framework === null) return "static-site";
+  return framework;
 }
 
 /**
@@ -227,6 +297,8 @@ async function lookupProject(
       id,
       name: String(res.json["name"] ?? nameOrId),
       accountId: typeof accountId === "string" && accountId !== "" ? accountId : null,
+      framework:
+        typeof res.json["framework"] === "string" ? String(res.json["framework"]).toLowerCase() : null,
     },
   };
 }
@@ -285,15 +357,17 @@ function lockedProjectId(req: Pick<ProbeRequest, "locked">, resourceKey: string)
  * Ensure semantics: create when absent (consequential), adopt when live but
  * unlocked (consequential), verify when live AND locked (routine read).
  */
-function ensureEffects(exists: boolean, locked: boolean): ContributedStep["effects"] {
+function ensureEffects(exists: boolean, locked: boolean, frameworkMismatch: boolean): ContributedStep["effects"] {
   if (!exists) return { createsResource: true };
   if (!locked) return { adoptsResource: true };
+  if (frameworkMismatch) return { changesConfiguration: true };
   return { readOnly: true };
 }
 
-function ensureSummary(name: string, exists: boolean, locked: boolean): string {
+function ensureSummary(name: string, exists: boolean, locked: boolean, frameworkMismatch: boolean): string {
   if (!exists) return `Create the Vercel project \`${name}\``;
   if (!locked) return `Adopt the existing Vercel project \`${name}\``;
+  if (frameworkMismatch) return `Set the Vercel framework preset for \`${name}\``;
   return `Verify the Vercel project \`${name}\` still exists`;
 }
 
@@ -303,6 +377,8 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
   const name = inputString(step, "name");
   if (!name) return fail(`Step ${step.id} is missing its project name input.`);
   const scope = inputString(step, "scope");
+  const framework = inputString(step, "framework");
+  if (!framework) return fail(`Step ${step.id} is missing its framework input.`);
 
   const existing = await lookupProject(ctx, name, scope);
   if (existing.kind === "error") return fail(existing.message, LOGIN_HINT);
@@ -322,11 +398,28 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
         : `Vercel project \`${name}\` was not found after ensure.`,
     );
   }
+  const expectedFramework = vercelFramework(framework);
+  if (manifestFramework(check.project.framework) !== framework) {
+    const updated = await updateProjectFramework(ctx, check.project.id, scope, expectedFramework);
+    if (updated.kind !== "ok") {
+      return fail(
+        updated.kind === "error"
+          ? updated.message
+          : `Vercel project \`${name}\` disappeared while its framework preset was being updated.`,
+      );
+    }
+    const verified = await lookupProject(ctx, check.project.id, scope);
+    if (verified.kind !== "found" || manifestFramework(verified.project.framework) !== framework) {
+      return fail(
+        `Vercel did not retain framework preset \`${expectedFramework ?? "Other"}\` for \`${name}\`.`,
+      );
+    }
+  }
   return {
     status: "succeeded",
     postconditionVerified: true,
     identity: { projectId: check.project.id, name: check.project.name },
-    receipt: { projectId: check.project.id, existed },
+    receipt: { projectId: check.project.id, existed, framework: expectedFramework ?? "Other" },
   };
 }
 
@@ -460,12 +553,20 @@ async function deploy(ctx: ProviderContext, step: PlannedStep): Promise<StepOutc
     await sleep(POLL_INTERVAL_MS, ctx.signal);
   }
 
-  const live = await ctx.http.request({ method: "GET", url });
-  const verified = live.status < 500;
+  // Verify the production alias, not the protected unique deployment URL.
+  // The latter can redirect to Vercel SSO and falsely look healthy while the
+  // public production alias still returns NOT_FOUND.
+  const projectDetail = await vapi(ctx, `/v9/projects/${target.project.id}`, scope);
+  const productionUrl = projectDetail.kind === "ok" ? productionUrlOf(projectDetail.json) : null;
+  if (!productionUrl) {
+    return fail("Vercel reported READY but no production alias was assigned to the planned project.");
+  }
+  const live = await ctx.http.request({ method: "GET", url: productionUrl });
+  const verified = live.status >= 200 && live.status < 400;
   return {
     status: verified ? "succeeded" : "failed",
     postconditionVerified: verified,
-    produced: { productionUrl: url },
+    produced: { productionUrl },
     receipt: {
       deploymentId,
       state,
@@ -498,7 +599,7 @@ async function verify(
     return fail("No production URL is recorded for this application.", "Deploy the application first.");
   }
   const live = await ctx.http.request({ method: "GET", url });
-  const verified = live.status < 500;
+  const verified = live.status >= 200 && live.status < 400;
   return {
     status: verified ? "succeeded" : "failed",
     postconditionVerified: verified,
@@ -512,10 +613,15 @@ async function verify(
 /* -------------------------------- driver --------------------------------- */
 
 export const vercelProvider = defineProvider({
+  authCommands: {
+    executables: [BIN],
+    loginArgs: ["login"],
+    logoutArgs: ["logout"],
+  },
   descriptor: {
     id: PROVIDER_ID,
     name: "Vercel",
-    roles: ["application"],
+    roles: ["environment", "application"],
     description:
       "Deploys applications on the user's own Vercel account through the official vercel CLI: project ensure/adopt, sealed production env transfers, prod deploys with readiness polling.",
     useWhen:
@@ -529,9 +635,14 @@ export const vercelProvider = defineProvider({
     ],
     consumes: [
       {
-        capability: "productionEnvironment",
+        capability: "variables",
         secret: false,
         description: "Production environment variables",
+      },
+      {
+        capability: "productionEnvironment",
+        secret: false,
+        description: "Legacy spelling for production environment variables",
       },
     ],
     testedVersions: [{ tool: "vercel", range: ">=39" }],
@@ -579,27 +690,42 @@ export const vercelProvider = defineProvider({
       .filter((line) => line !== "");
     const identity = identityLines[identityLines.length - 1] ?? "vercel user";
 
-    const teams = await ctx.run.run(BIN, ["teams", "list"]);
-    const accounts = teams.exitCode === 0 ? parseTeamsList(teams.stdout) : [];
+    const userRes = await vapi(ctx, "/v2/user", null);
+    const user = userRes.kind === "ok" ? (userRes.json["user"] as JsonObject | undefined) : undefined;
+    const uid = user?.["uid"] ?? user?.["id"];
+    const personal: ProviderAccount | undefined =
+      typeof uid === "string" && uid !== ""
+        ? { id: uid, label: identity, kind: "personal", selector: "personal" }
+        : undefined;
 
-    // The account operations will run under, with a DURABLE id: the selected
-    // team scope, or the personal user id (usernames get renamed; ids don't).
-    const appIntent = req.intent.find((intent) => intent.role === "application");
+    // Prefer structured API output. Human table parsing remains a fallback
+    // for CLI/API version skew, but personal is always a first-class choice.
+    const teamsApi = await vapi(ctx, "/v2/teams?limit=100", null);
+    let teamAccounts = teamsApi.kind === "ok" ? parseTeamsApi(teamsApi.json) : [];
+    if (teamsApi.kind !== "ok") {
+      const teams = await ctx.run.run(BIN, ["teams", "list"]);
+      teamAccounts = teams.exitCode === 0 ? parseTeamsList(teams.stdout) : [];
+      warnings.push("Could not read Vercel teams through the structured API; used CLI team discovery instead.");
+    }
+    // Current Vercel accounts include the Hobby/personal scope in /v2/teams
+    // (`createdDirectToHobby`). Only synthesize the legacy personal scope when
+    // structured/fallback team discovery returned nothing at all.
+    const accounts = teamAccounts.length > 0 ? teamAccounts : personal ? [personal] : [];
+
+    // Select an account explicitly from manifest intent, then from the lock,
+    // then auto-select only when exactly one account is available.
+    const appIntent = req.intent.find((intent) => intent.role === "environment" || intent.role === "application");
     const scopeConfig = appIntent ? configString(appIntent.config, "scope") : null;
-    let account: ProviderAccount | undefined;
-    if (scopeConfig) {
-      account = accounts.find((entry) => entry.id === scopeConfig) ?? {
-        id: scopeConfig,
-        label: scopeConfig,
-        kind: "team",
-      };
-    } else {
-      const userRes = await vapi(ctx, "/v2/user", null);
-      if (userRes.kind === "ok") {
-        const user = userRes.json["user"] as JsonObject | undefined;
-        const uid = user?.["uid"] ?? user?.["id"];
-        if (typeof uid === "string" && uid !== "") account = { id: uid, label: identity, kind: "personal" };
-      }
+    const lockedAccountId = appIntent ? req.locked.find((entry) => entry.resourceKey === appIntent.resourceKey)?.accountId : undefined;
+    const account = scopeConfig
+      ? accounts.find((entry) => entry.selector === scopeConfig || entry.id === scopeConfig)
+      : lockedAccountId
+        ? accounts.find((entry) => entry.id === lockedAccountId)
+        : accounts.length === 1
+          ? accounts[0]
+          : undefined;
+    if (scopeConfig && !account) {
+      warnings.push(`Configured Vercel scope \`${scopeConfig}\` is not available to the current login.`);
     }
 
     const mismatch = linkedProjectWarning(ctx.projectRoot, req);
@@ -607,8 +733,8 @@ export const vercelProvider = defineProvider({
 
     const observed: JsonObject = {};
     for (const intent of req.intent) {
-      if (intent.role !== "application") continue;
-      const scope = configString(intent.config, "scope");
+      if (intent.role !== "application" && intent.role !== "environment") continue;
+      const scope = configString(intent.config, "scope") ?? account?.selector ?? null;
       const nameOrId = lockedProjectId(req, intent.resourceKey) ?? resolveName(intent);
       if (!nameOrId) {
         observed[intent.resourceKey] = { exists: false };
@@ -616,7 +742,13 @@ export const vercelProvider = defineProvider({
       }
       const looked = await lookupProject(ctx, nameOrId, scope);
       observed[intent.resourceKey] =
-        looked.kind === "found" ? { exists: true, projectId: looked.project.id } : { exists: false };
+        looked.kind === "found"
+          ? {
+              exists: true,
+              projectId: looked.project.id,
+              framework: manifestFramework(looked.project.framework),
+            }
+          : { exists: false };
       if (looked.kind === "error") warnings.push(looked.message);
     }
 
@@ -630,19 +762,34 @@ export const vercelProvider = defineProvider({
   },
 
   async plan(ctx: ProviderContext, req: PlanRequest): Promise<PlanContribution> {
-    const appIntent = req.intent.find((intent) => intent.role === "application");
+    const appIntent = req.intent.find((intent) => intent.role === "environment" || intent.role === "application");
     if (!appIntent) return { steps: [] };
 
-    const scope = configString(appIntent.config, "scope");
+    const configuredScope = configString(appIntent.config, "scope");
+    const lockedAccountId = req.locked.find((entry) => entry.resourceKey === appIntent.resourceKey)?.accountId;
+    const selectedAccount = req.probe.auth.account;
+    const scope = configuredScope ?? selectedAccount?.selector ?? null;
     const decisions: Decision[] = [];
-    if (req.probe.accounts.length > 1 && !scope) {
+    const needsAccountChoice =
+      (!configuredScope && !lockedAccountId && req.probe.accounts.length > 1) ||
+      ((configuredScope !== null || lockedAccountId !== undefined) && !selectedAccount);
+    if (needsAccountChoice) {
       decisions.push({
         kind: "decision",
         id: "vercel-scope",
         providerId: PROVIDER_ID,
-        question: "Multiple Vercel teams are available. Which scope should own this application?",
-        options: req.probe.accounts.map((account) => ({ id: account.id, label: account.label })),
-        writeBack: "application.config.scope",
+        question:
+          configuredScope || lockedAccountId
+            ? "The previously selected Vercel account is unavailable. Which account should own this application?"
+            : "Which Vercel account should own this application?",
+        options: req.probe.accounts.map((account) => ({
+          id: account.selector ?? account.id,
+          label: account.label,
+          description: account.kind === "personal" ? "Personal account" : "Team account",
+        })),
+        writeBack: appIntent.role === "application"
+          ? "application.config.scope"
+          : `environments.${appIntent.environment ?? "production"}.config.scope`,
       });
       return { steps: [], decisions };
     }
@@ -662,37 +809,44 @@ export const vercelProvider = defineProvider({
       };
     }
 
+    const framework = appIntent.framework;
+    if (!framework) {
+      return {
+        steps: [],
+        warnings: ["Vercel requires application.framework in bahama.yaml."],
+      };
+    }
     const key = appIntent.resourceKey;
     const observed = req.probe.observed[key] as JsonObject | undefined;
     const exists = observed?.["exists"] === true;
-    const pinnedId = lockedProjectId(req, key);
+    const lockedId = lockedProjectId(req, key);
+    // A confirmed-missing locked project is replacement intent. Do not carry
+    // its stale id into ensure/env/deploy; the replacement is resolved by name.
+    const pinnedId = exists ? lockedId : null;
     const locked = pinnedId !== null;
+    const observedFramework = observed?.["framework"];
+    const frameworkMismatch =
+      exists && typeof observedFramework === "string" && observedFramework !== framework;
     // The locked project id rides every step so execution pins the vercel CLI
     // to the planned project (VERCEL_PROJECT_ID) instead of .vercel/project.json.
-    const baseInputs = { name, scope, projectId: pinnedId };
+    const baseInputs = { name, scope, projectId: pinnedId, framework };
 
     const steps: ContributedStep[] = [];
     steps.push({
       id: "application-ensure",
       action: "vercel.project.ensure",
-      summary: ensureSummary(name, exists, locked),
+      summary: ensureSummary(name, exists, locked, frameworkMismatch),
       resourceKey: key,
-      effects: ensureEffects(exists, locked),
+      effects: ensureEffects(exists, locked, frameworkMismatch),
       inputs: baseInputs,
       postcondition: `Project \`${name}\` exists on Vercel.`,
     });
 
     const envStepIds: string[] = [];
     for (const edge of req.bindings.filter((binding) => binding.to.resourceKey === key)) {
-      const fromAddress =
-        edge.from.resourceKey === "application"
-          ? `application.${edge.from.capability}`
-          : `resources.${edge.from.resourceKey}.${edge.from.capability}`;
-      const toAddress =
-        edge.to.resourceKey === "application"
-          ? `application.${edge.to.capability}`
-          : `resources.${edge.to.resourceKey}.${edge.to.capability}`;
-      const id = `application-env-${edge.name.toLowerCase()}`;
+      const fromAddress = formatCapabilityAddress(edge.from);
+      const toAddress = formatCapabilityAddress(edge.to);
+      const id = `${key.replaceAll(".", "-")}-env-${edge.name.toLowerCase()}`;
       envStepIds.push(id);
       steps.push({
         id,
@@ -701,33 +855,36 @@ export const vercelProvider = defineProvider({
         resourceKey: key,
         effects: { transfersSecret: edge.secret },
         consumes: [fromAddress],
-        dependsOn: ["application-ensure"],
+        dependsOn: [`${key.replaceAll(".", "-")}-ensure`],
         inputs: { ...baseInputs, bindingName: edge.name, bindingTo: toAddress },
         postcondition: `${edge.name} is present for the production target on the Vercel project.`,
       });
     }
 
-    steps.push({
-      id: "application-deploy",
+    const ensureId = `${key.replaceAll(".", "-")}-ensure`;
+    steps[0]!.id = ensureId;
+    const operation = req.operation ?? { kind: "deploy" as const, environment: appIntent.environment ?? "production" };
+    if (operation.kind === "deploy" && operation.environment === (appIntent.environment ?? "production")) steps.push({
+      id: `${key.replaceAll(".", "-")}-deploy`,
       action: "vercel.deploy",
       summary: `Deploy \`${name}\` to Vercel production`,
       resourceKey: key,
       effects: { deploys: true },
-      dependsOn: ["application-ensure", ...envStepIds],
+      dependsOn: [ensureId, ...envStepIds],
       inputs: baseInputs,
       produces: ["productionUrl"],
       postcondition: "The deployment reaches READY and the production URL responds.",
     });
-    steps.push({
-      id: "application-verify",
+    if (operation.kind === "deploy" && operation.environment === (appIntent.environment ?? "production")) steps.push({
+      id: `${key.replaceAll(".", "-")}-verify`,
       action: "vercel.verify",
       summary: `Verify \`${name}\` responds in production`,
       resourceKey: key,
       effects: { readOnly: true },
-      dependsOn: ["application-deploy"],
-      consumes: [`application.productionUrl`],
+      dependsOn: [`${key.replaceAll(".", "-")}-deploy`],
+      consumes: [formatCapabilityAddress({ resourceKey: key, capability: "productionUrl" })],
       inputs: baseInputs,
-      postcondition: "A production request returns a non-5xx response.",
+      postcondition: "A production request returns a successful or redirect response.",
     });
 
     return { steps, ...(warnings.length > 0 ? { warnings } : {}) };
@@ -756,7 +913,7 @@ export const vercelProvider = defineProvider({
     const installed = await ctx.run.which(BIN);
 
     for (const intent of req.intent) {
-      if (intent.role !== "application") continue;
+      if (intent.role !== "application" && intent.role !== "environment") continue;
       if (!installed) {
         resources.push({
           resourceKey: intent.resourceKey,

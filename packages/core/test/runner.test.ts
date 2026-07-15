@@ -45,3 +45,40 @@ describe("SafeRunner captureSecretStdout", () => {
     expect(result.secret).toBeUndefined();
   });
 });
+
+describe("SafeRunner captureSecretJson", () => {
+  it("seals one JSON field while preserving redacted structured output", async () => {
+    const { runner, broker } = makeRunner();
+    const result = await runner.run(
+      "node",
+      [
+        "-e",
+        `console.log(JSON.stringify({project:{id:"proj-1"},connection_uris:[{connection_uri:"postgres://user:secret@host/db"}]}))`,
+      ],
+      {
+        captureSecretJson: {
+          name: "database.connectionUrl",
+          path: ["connection_uris", 0, "connection_uri"],
+        },
+      },
+    );
+
+    expect(result.secret).toBeDefined();
+    expect(result.stdout).not.toContain("postgres://");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      project: { id: "proj-1" },
+      connection_uris: [{ connection_uri: "[redacted:database.connectionUrl]" }],
+    });
+    const rawLength = await broker.use(result.secret!, async (value) => value.length);
+    expect(rawLength).toBe("postgres://user:secret@host/db".length);
+  });
+
+  it("fails closed when declared secret JSON is malformed", async () => {
+    const { runner } = makeRunner();
+    const result = await runner.run("node", ["-e", "console.log('not-json secret-value')"], {
+      captureSecretJson: { name: "test.secret", path: ["secret"] },
+    });
+    expect(result.secret).toBeUndefined();
+    expect(result.stdout).not.toContain("secret-value");
+  });
+});

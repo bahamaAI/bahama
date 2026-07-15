@@ -32,9 +32,9 @@ export interface AuthRequirement {
   kind: "auth";
   providerId: string;
   /**
-   * The command the HUMAN should run in their own terminal, e.g.
-   * `bahama auth login vercel`. Agents surface this; they do not run
-   * interactive logins themselves.
+   * The Bahama command an agent or human may launch, e.g.
+   * `bahama auth login vercel`. Official provider authorization still occurs
+   * in the provider-owned browser/device flow.
    */
   loginHint: string;
   reason: "missing" | "expired" | "mismatch";

@@ -19,11 +19,11 @@ Do not ask the user for a database URL, host, password, username, or connection 
 
 In deployed Worker/Hono code, the database is usually available as `env.DB`.
 
-For code that also needs local testing through Bahama's dev proxy, prefer `@bahama-ai/sdk/server` and `getDb(c.env)`. See `local-development.md` for details.
+For code that also needs local testing through Bahama's dev proxy, prefer `@bahama-ai/cloud-sdk/server` and `getDb(c.env)`. See `local-development.md` for details.
 
 ```ts
 import {Hono} from "hono";
-import {getDb, type BahamaDatabase} from "@bahama-ai/sdk/server";
+import {getDb, type BahamaDatabase} from "@bahama-ai/cloud-sdk/server";
 
 type Env = {
   Bindings: {
@@ -50,7 +50,7 @@ export default app;
 
 If local testing is not needed, direct `c.env.DB` access is acceptable in deployable Hono code.
 
-Use the `BahamaDatabase` type exported by `@bahama-ai/sdk/server`. Do not install
+Use the `BahamaDatabase` type exported by `@bahama-ai/cloud-sdk/server`. Do not install
 provider-specific Worker type packages just to type Bahama's database binding.
 
 ## Schema Setup

@@ -27,7 +27,7 @@ The project must include:
 - `src/`
 - Vite dependency
 - Hono dependency
-- `@bahama-ai/sdk` dependency when using Bahama database types, `getDb`, or local database testing
+- `@bahama-ai/cloud-sdk` dependency when using Bahama database types, `getDb`, or local database testing
 - build script
 - deployable backend entry at `server/index.ts`, `server/index.js`, `server/index.mts`, or `server/index.tsx`
 
@@ -115,7 +115,7 @@ Minimal deployable Hono entry:
 
 ```ts
 import {Hono} from "hono";
-import type {BahamaDatabase} from "@bahama-ai/sdk/server";
+import type {BahamaDatabase} from "@bahama-ai/cloud-sdk/server";
 
 type Env = {
   Bindings: {
