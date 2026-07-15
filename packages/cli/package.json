@@ -1,7 +1,16 @@
 {
-  "name": "@bahama-ai/cli",
+  "name": "bahama",
   "version": "0.1.0-alpha.1",
   "description": "Bahama: the agent-native infrastructure CLI. Declarative intent in bahama.yaml, deterministic plans out, verified execution against your own provider accounts.",
+  "homepage": "https://github.com/bahamaAI/bahama#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bahamaAI/bahama.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/bahamaAI/bahama/issues"
+  },
   "license": "MIT",
   "type": "module",
   "bin": {

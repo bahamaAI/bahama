@@ -1,7 +1,7 @@
 {
-  "name": "@bahama-ai/cloud-sdk",
-  "version": "0.1.2",
-  "description": "Server-side helpers for Bahama Cloud resources across local development and the native production runtime.",
+  "name": "bahama-runtime",
+  "version": "0.1.0-alpha.1",
+  "description": "Server-side runtime bridge for Bahama Cloud resources across native production and local development.",
   "homepage": "https://www.bahama.ai",
   "repository": {
     "type": "git",
