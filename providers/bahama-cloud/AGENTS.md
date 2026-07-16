@@ -7,7 +7,11 @@ This file adds Bahama Cloud-specific rules to `providers/AGENTS.md`.
 - Source archives must preserve containment, size, and exclusion checks before signed upload.
 - Deployment is asynchronous: upload, start the job, poll to a terminal state, then verify the published URL.
 - Create development access only when declared local bindings require it; keep the token secret and server-side.
-- Framework, deployment payload, or managed-resource changes require coordinated control-plane, deployer, descriptor, skill, and live-path review.
+- The control-plane-to-deployer job contract is versioned and strictly
+  validated in the private Cloud repositories. Framework, payload, or
+  managed-resource changes require coordinated contract fixtures, control
+  plane, deployer, descriptor, skill, documentation, and live-path review.
+  Roll out a compatible receiver before a producer sends a new shape.
 
 Verify with:
 

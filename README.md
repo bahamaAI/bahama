@@ -158,7 +158,10 @@ Steps for contributing:
 1. Read [`AGENTS.md`](AGENTS.md) first — it holds the dependency rules and safety invariants.
 2. Keep changes small, and add a regression test for behavior changes.
 3. If agent-facing behavior changes, update the provider descriptions and `skills/bahama` too.
-4. Run `npm run build && npm test && npm run lint` before opening a pull request.
+4. Run `npm run build && npm test && npm run typecheck && npm run lint` before opening a pull request.
+
+GitHub CI repeats those checks from a clean install on every pull request and
+push to `main`, then previews the two public npm packages. Publishing is separate and occurs only from an intentional GitHub Release.
 
 ## License
 

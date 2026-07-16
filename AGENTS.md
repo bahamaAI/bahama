@@ -89,6 +89,13 @@ npm run build        # focused: npm run build -w <package>
 npm test             # focused: npx vitest run <path>
 npm run typecheck
 npm run lint
+npm run version:check
 ```
 
 Use focused tests while iterating, then run the full relevant suite. For end-to-end checks without live accounts, use the internal test provider (`BAHAMA_ENABLE_TEST=1`; see `providers/test/README.md`). Live-provider tests may create billable resources and require explicit authorization.
+
+GitHub CI runs the clean install, version check, build, tests, typecheck, lint,
+and public-package previews on pull requests and pushes to `main`. Do not weaken
+CI to make a change pass. npm publishing is a separate, release-only workflow:
+set versions with `npm run version:set -- <version>`, verify them, and publish a
+matching GitHub Release. Only `bahama` and `bahama-runtime` are published.
