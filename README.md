@@ -66,7 +66,7 @@ Nine commands cover the whole lifecycle — and they work the same on every prov
 | `bahama doctor`                     | Check that everything is set up                                  |
 | `bahama auth login <provider>`      | Link your own accounts with third-party providers                |
 
-Bahama's orchestration is managed through several files in your repo — read them, diff them, commit them. Plans only run after your approval, every step is verified against live provider state, and secrets are sealed end-to-end or stored in an uncommitted `.env.local` file.
+Bahama's orchestration is managed through the following files in your repo. Plans only run after your approval, every step is verified against live provider state, and secrets are sealed end-to-end and/or stored in a local `.env` file.
 
 | File          | Owner                  | Committed | Purpose                                                  |
 | :------------ | :--------------------- | :-------- | :------------------------------------------------------- |

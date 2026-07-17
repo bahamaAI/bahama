@@ -1,6 +1,6 @@
 {
   "name": "@bahama/core",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "private": true,
   "description": "Bahama's internal plan, execution, state, and secret engine. Bundled into bahama and not published separately.",
   "license": "MIT",
@@ -21,7 +21,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@bahama/provider-kit": "0.1.0-alpha.2",
+    "@bahama/provider-kit": "0.1.0-alpha.3",
     "execa": "^9.6.0",
     "semver": "^7.7.0",
     "yaml": "^2.8.0",
