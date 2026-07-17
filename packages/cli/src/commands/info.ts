@@ -1,6 +1,12 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { JsonObject, Requirement } from "@bahama/provider-kit";
+import type {
+  JsonObject,
+  ProviderDescriptor,
+  Requirement,
+  ResourceHealthState,
+  ResourceStatus,
+} from "@bahama/provider-kit";
 import {
   LOCK_FILENAME,
   configPath,
@@ -117,11 +123,8 @@ export async function runDoctor(projectRoot: string, emitOptions: EmitOptions): 
   );
 }
 
-/**
- * Provider descriptions for the MODEL. `--format agent` is prose the agent
- * reads to choose; there are no hidden ranking heuristics and no
- * natural-language query — choosing is the model's job.
- */
+/** Provider discovery is progressive: list compact capabilities first, then
+ * request one provider for its complete use/avoid and setup guidance. */
 export async function runProviders(
   providerId: string | undefined,
   format: "agent" | "json",
@@ -136,27 +139,7 @@ export async function runProviders(
   }
 
   if (format === "agent" && !emitOptions.json) {
-    const sections = descriptors.map((d) =>
-      [
-        `## ${d.name} (\`${d.id}\`)`,
-        ``,
-        `roles: ${d.roles.join(", ")}`,
-        d.frameworks ? `frameworks: ${d.frameworks.join(", ")}` : null,
-        d.engines ? `engines: ${d.engines.join(", ")}` : null,
-        ``,
-        d.description,
-        ``,
-        `Use when: ${d.useWhen}`,
-        `Avoid when: ${d.avoidWhen}`,
-        d.requirements.length > 0 ? `Requires: ${d.requirements.join("; ")}` : null,
-        ``,
-        `Produces: ${d.produces.map((c) => `${c.capability}${c.secret ? " (secret)" : ""}`).join(", ") || "nothing"}`,
-        `Consumes: ${d.consumes.map((c) => c.capability).join(", ") || "nothing"}`,
-      ]
-        .filter((line): line is string => line !== null)
-        .join("\n"),
-    );
-    process.stdout.write(`${sections.join("\n\n")}\n`);
+    process.stdout.write(providerId ? `${renderProviderDetail(descriptors[0]!)}\n` : renderProviderIndex(descriptors));
     process.exit(0);
   }
 
@@ -166,6 +149,62 @@ export async function runProviders(
     }),
     emitOptions,
   );
+}
+
+function renderProviderIndex(descriptors: ProviderDescriptor[]): string {
+  const sections: string[] = [];
+  appendProviderGroup(sections, "Application hosts", descriptors.filter((d) => d.roles.includes("application")), (d) =>
+    `frameworks: ${d.frameworks?.join(", ") || "none declared"}`,
+  );
+  appendProviderGroup(sections, "Databases", descriptors.filter((d) => d.roles.includes("database")), (d) =>
+    `engines: ${d.engines?.join(", ") || "none declared"}`,
+  );
+  appendProviderGroup(
+    sections,
+    "Local and configuration environments",
+    descriptors.filter((d) => d.roles.includes("environment") && !d.roles.includes("application")),
+    (d) => `consumes: ${d.consumes.map((capability) => capability.capability).join(", ") || "nothing"}`,
+  );
+  appendProviderGroup(sections, "Services", descriptors.filter((d) => d.roles.includes("service")), (d) => {
+    const produced = d.produces.map((capability) => capability.capability).join(", ") || "nothing";
+    return `produces: ${produced}`;
+  });
+
+  sections.push(
+    "Run `bahama providers <id> --format agent` for one provider's use/avoid guidance, requirements, and capabilities.",
+  );
+  return `${sections.join("\n\n")}\n`;
+}
+
+function appendProviderGroup(
+  sections: string[],
+  title: string,
+  descriptors: ProviderDescriptor[],
+  describe: (descriptor: ProviderDescriptor) => string,
+): void {
+  if (descriptors.length === 0) return;
+  sections.push(`## ${title}\n${descriptors.map((d) => `- ${d.name} (\`${d.id}\`) — ${describe(d)}`).join("\n")}`);
+}
+
+function renderProviderDetail(descriptor: ProviderDescriptor): string {
+  return [
+    `## ${descriptor.name} (\`${descriptor.id}\`)`,
+    ``,
+    `roles: ${descriptor.roles.join(", ")}`,
+    descriptor.frameworks ? `frameworks: ${descriptor.frameworks.join(", ")}` : null,
+    descriptor.engines ? `engines: ${descriptor.engines.join(", ")}` : null,
+    ``,
+    descriptor.description,
+    ``,
+    `Use when: ${descriptor.useWhen}`,
+    `Avoid when: ${descriptor.avoidWhen}`,
+    descriptor.requirements.length > 0 ? `Requires: ${descriptor.requirements.join("; ")}` : null,
+    ``,
+    `Produces: ${descriptor.produces.map((c) => `${c.capability}${c.secret ? " (secret)" : ""}`).join(", ") || "nothing"}`,
+    `Consumes: ${descriptor.consumes.map((c) => c.capability).join(", ") || "nothing"}`,
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
 }
 
 /** Clear resolved resource identity but keep intent — the fork/template escape hatch. */
@@ -213,7 +252,7 @@ export async function runStatus(projectRoot: string, emitOptions: EmitOptions): 
   const registry = buildRegistry();
   const engine = buildEngine(projectRoot);
 
-  const resources: JsonObject[] = [];
+  const resources: ResourceStatus[] = [];
   let materialDrift = 0;
   const providers = new Map<string, Array<{ resourceKey: string; role: "application" | "environment" | "database" | "service"; config: JsonObject; framework?: string; engine?: string }>>();
   if (manifest.legacyApplication) {
@@ -247,7 +286,14 @@ export async function runStatus(projectRoot: string, emitOptions: EmitOptions): 
   for (const [providerId, intents] of providers) {
     const driver = registry.get(providerId);
     if (!driver) {
-      resources.push({ provider: providerId, error: "not registered in this CLI build" });
+      for (const intent of intents) {
+        resources.push({
+          resourceKey: intent.resourceKey,
+          exists: false,
+          health: { state: "unknown", reason: `Provider ${providerId} is not registered in this CLI build.` },
+          drift: [],
+        });
+      }
       continue;
     }
     const report = await driver.status(engine.contextFor(providerId), {
@@ -259,21 +305,41 @@ export async function runStatus(projectRoot: string, emitOptions: EmitOptions): 
     });
     for (const resource of report.resources) {
       materialDrift += resource.drift.filter((d) => d.severity === "material").length;
-      resources.push(resource as unknown as JsonObject);
+      resources.push(resource);
     }
   }
+
+  const healthCounts = countHealth(resources);
+  const summary = summarizeHealth(resources.length, healthCounts);
 
   emit(
     envelope(
       "status",
       materialDrift > 0 ? "decision_required" : "succeeded",
       materialDrift > 0
-        ? `${materialDrift} material drift finding(s) — resolve before mutating.`
-        : "Live state matches the lock.",
-      { resources },
+        ? `${summary}; ${materialDrift} material drift finding(s) require a decision.`
+        : `${summary}; no material drift.`,
+      { resources: resources as unknown as JsonObject[] },
     ),
     emitOptions,
   );
+}
+
+function countHealth(resources: ResourceStatus[]): Record<ResourceHealthState, number> {
+  const counts: Record<ResourceHealthState, number> = { ready: 0, not_ready: 0, unhealthy: 0, unknown: 0 };
+  for (const resource of resources) counts[resource.health.state] += 1;
+  return counts;
+}
+
+function summarizeHealth(total: number, counts: Record<ResourceHealthState, number>): string {
+  if (total === 0) return "No resources declared";
+  const parts = [
+    counts.ready > 0 ? `${counts.ready} ready` : null,
+    counts.not_ready > 0 ? `${counts.not_ready} not ready` : null,
+    counts.unhealthy > 0 ? `${counts.unhealthy} unhealthy` : null,
+    counts.unknown > 0 ? `${counts.unknown} unknown` : null,
+  ].filter((part): part is string => part !== null);
+  return `Checked ${total} resource${total === 1 ? "" : "s"}: ${parts.join(", ")}`;
 }
 
 export async function runConfig(

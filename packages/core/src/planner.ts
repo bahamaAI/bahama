@@ -1,14 +1,16 @@
-import type {
-  BindingEdge,
-  Decision,
-  JsonObject,
-  PlannedStep,
-  ProbeResult,
-  ProviderContext,
-  ProviderDriver,
-  PlanOperation,
-  Requirement,
-  ResourceIntent,
+import {
+  ProviderPlanError,
+  type BindingEdge,
+  type Decision,
+  type JsonObject,
+  type PlanContribution,
+  type PlannedStep,
+  type ProbeResult,
+  type ProviderContext,
+  type ProviderDriver,
+  type PlanOperation,
+  type Requirement,
+  type ResourceIntent,
 } from "@bahama/provider-kit";
 import { addressString, classifyStep, type ClassificationContext } from "./classify.js";
 import { planContentId } from "./plan-store.js";
@@ -143,16 +145,25 @@ export async function compilePlan(deps: PlannerDeps): Promise<PlanOutcome> {
   const steps: PlannedStep[] = [];
   for (const [providerId, providerIntents] of intents.byProvider) {
     const driver = deps.registry.get(providerId)!;
-    const contribution = await driver.plan(deps.contextFor(providerId), {
-      intent: providerIntents,
-      locked: lockedFor(lock, providerIntents),
-      probe: probes.get(providerId)!,
-      bindings: edges.filter((edge) =>
-        providerIntents.some((i) => i.resourceKey === edge.from.resourceKey || i.resourceKey === edge.to.resourceKey),
-      ),
-      operation,
-      appliedBindings: lock?.bindings ?? [],
-    });
+    let contribution: PlanContribution;
+    try {
+      contribution = await driver.plan(deps.contextFor(providerId), {
+        intent: providerIntents,
+        locked: lockedFor(lock, providerIntents),
+        probe: probes.get(providerId)!,
+        bindings: edges.filter((edge) =>
+          providerIntents.some((i) => i.resourceKey === edge.from.resourceKey || i.resourceKey === edge.to.resourceKey),
+        ),
+        operation,
+        appliedBindings: lock?.bindings ?? [],
+      });
+    } catch (error) {
+      if (!(error instanceof ProviderPlanError)) throw error;
+      return blocked("failed", {
+        message: `${providerId} could not compile its plan: ${error instanceof Error ? error.message : String(error)}`,
+        warnings,
+      });
+    }
     warnings.push(...(contribution.warnings ?? []));
     decisions.push(...(contribution.decisions ?? []));
     requirements.push(...(contribution.requirements ?? []));

@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { applyPlan, compilePlan, emptyLock, loadLock, saveLock, savePlan, validateManifest } from "@bahama/core";
-import type { ProviderDriver } from "@bahama/provider-kit";
+import { ProviderPlanError, type ProviderDriver } from "@bahama/provider-kit";
 import {
   apply,
   engine,
@@ -56,6 +56,45 @@ describe("planning", () => {
     const outcome = await plan(root);
     expect(outcome.kind).toBe("blocked");
     if (outcome.kind === "blocked") expect(outcome.status).toBe("auth_required");
+  });
+
+  it("returns a provider planning error as a normal failed outcome", async () => {
+    const root = await makeProject();
+    const eng = engine(root);
+    const broken: ProviderDriver = {
+      ...testProvider,
+      async plan() {
+        throw new ProviderPlanError("remote migration history changed");
+      },
+    };
+    const outcome = await compilePlan({
+      projectRoot: root,
+      registry: new Map([["test", broken]]),
+      contextFor: (id) => eng.contextFor(id),
+    });
+    expect(outcome).toMatchObject({
+      kind: "blocked",
+      status: "failed",
+      message: expect.stringContaining("remote migration history changed"),
+    });
+  });
+
+  it("does not hide unexpected provider planning bugs", async () => {
+    const root = await makeProject();
+    const eng = engine(root);
+    const broken: ProviderDriver = {
+      ...testProvider,
+      async plan() {
+        throw new TypeError("provider implementation bug");
+      },
+    };
+    await expect(
+      compilePlan({
+        projectRoot: root,
+        registry: new Map([["test", broken]]),
+        contextFor: (id) => eng.contextFor(id),
+      }),
+    ).rejects.toThrow(/provider implementation bug/);
   });
 
   it("requires a decision for multiple accounts, resolved via intent write-back", async () => {

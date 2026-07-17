@@ -946,7 +946,10 @@ export const bahamaCloudProvider = defineProvider({
         resources.push({
           resourceKey: intent.resourceKey,
           exists: false,
-          healthy: "unknown",
+          health: {
+            state: "unknown",
+            reason: token ? "Bahama Cloud project name could not be resolved." : "Bahama Cloud is not authenticated.",
+          },
           detail: token ? "project name unresolved" : "not authenticated",
           drift: [],
         });
@@ -966,17 +969,28 @@ export const bahamaCloudProvider = defineProvider({
         resources.push({
           resourceKey: intent.resourceKey,
           exists: false,
-          healthy: "unknown",
+          health: { state: "unknown", reason: "Bahama Cloud authentication could not be verified." },
           detail: "not authenticated",
           drift: [],
         });
         continue;
       }
       if (!project) {
+        if (status !== 404) {
+          resources.push({
+            resourceKey: intent.resourceKey,
+            exists: false,
+            health: { state: "unknown", reason: `Bahama Cloud project lookup failed (HTTP ${status}).` },
+            drift: [],
+          });
+          continue;
+        }
         resources.push({
           resourceKey: intent.resourceKey,
           exists: false,
-          healthy: false,
+          health: lockedSlug
+            ? { state: "unhealthy", reason: "Locked Bahama Cloud project no longer exists." }
+            : { state: "not_ready", reason: "Bahama Cloud project has not been provisioned." },
           drift: lockedSlug
             ? [
                 {
@@ -996,7 +1010,15 @@ export const bahamaCloudProvider = defineProvider({
         resources.push({
           resourceKey: intent.resourceKey,
           exists,
-          healthy: exists ? d1.status === "ready" : false,
+          health: !exists
+            ? locked
+              ? { state: "unhealthy", reason: "Locked database is no longer provisioned." }
+              : { state: "not_ready", reason: "Database has not been provisioned." }
+            : d1.status === "ready"
+              ? { state: "ready" }
+              : d1.status === "failed"
+                ? { state: "unhealthy", reason: "Database provisioning failed." }
+                : { state: "not_ready", reason: `Database is ${d1.status}.` },
           ...(exists ? { detail: `env.${d1.bindingName ?? "DB"}` } : {}),
           drift:
             locked && !exists
@@ -1014,7 +1036,11 @@ export const bahamaCloudProvider = defineProvider({
         resources.push({
           resourceKey: intent.resourceKey,
           exists: true,
-          healthy: url ? project.status !== "failed" : "unknown",
+          health: !url
+            ? { state: "not_ready", reason: "Application has not been deployed." }
+            : project.status === "failed"
+              ? { state: "unhealthy", reason: "Latest deployment failed." }
+              : { state: "ready" },
           ...(url ? { detail: url } : {}),
           drift: [],
         });

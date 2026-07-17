@@ -814,7 +814,7 @@ describe("status", () => {
       intent: [APP_INTENT],
       locked: [{ resourceKey: "application", identity: { projectId: "prj_gone" } }],
     });
-    expect(report.resources[0]).toMatchObject({ exists: false, healthy: false });
+    expect(report.resources[0]).toMatchObject({ exists: false, health: { state: "unhealthy" } });
     expect(report.resources[0]!.drift[0]).toMatchObject({ severity: "material" });
   });
 
@@ -838,7 +838,7 @@ describe("status", () => {
     });
     expect(report.resources[0]).toMatchObject({
       exists: true,
-      healthy: true,
+      health: { state: "ready" },
       detail: "https://my-app.vercel.app",
     });
   });

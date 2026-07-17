@@ -33,7 +33,7 @@ Run `bahama <command> --help` for arguments and options. Most of the time, your 
 | Command                                        | Purpose                                                                     |
 | :--------------------------------------------- | :-------------------------------------------------------------------------- |
 | `bahama inspect`                               | Report non-secret application facts (framework, scripts, env names)         |
-| `bahama providers [id]`                        | Describe available providers and their capabilities                         |
+| `bahama providers [id]`                        | List compatibility; pass an id for detailed selection guidance              |
 | `bahama init`                                  | Create a starter `bahama.yaml` — touches nothing remote                     |
 | `bahama plan`                                  | Compile intent into a reviewable plan — always read-only                    |
 | `bahama apply <plan-id> --approved`            | Execute a compiled plan, verifying every step                               |
@@ -46,7 +46,9 @@ Run `bahama <command> --help` for arguments and options. Most of the time, your 
 
 ## For agents
 
-Pass `--json` to receive one typed result envelope per command:
+The default output is the concise agent and human interface. It shows plans, accounts, decisions, requirements, recovery guidance, and the exact next command without exposing the full execution document. Use it for normal `plan`, `apply`, `deploy`, `doctor`, and authentication workflows.
+
+Pass `--json` when structured details are needed, particularly for `inspect`, `status`, integrations, or diagnostics. It returns one complete typed result envelope:
 
 ```json
 {
@@ -61,7 +63,7 @@ Pass `--json` to receive one typed result envelope per command:
 
 `status` states:
 
-- `succeeded` — completed and verified
+- `succeeded` — the command completed; `status` reports each resource as `ready`, `not_ready`, `unhealthy`, or `unknown`
 - `decision_required` — edit `bahama.yaml` at the returned `writeBack` path, then re-plan
 - `installation_required` — a provider tool is missing; follow the returned instruction
 - `auth_required` — run the returned provider login action
@@ -70,6 +72,8 @@ Pass `--json` to receive one typed result envelope per command:
 - `failed` — execution or validation failed; the message includes recovery guidance
 
 Workflow states exit `0`. Operational failure exits `1`, invalid invocation or manifest exits `2`, internal failure exits `3`.
+
+Provider discovery is progressive: `bahama providers --format agent` returns a compact compatibility index. After shortlisting, run `bahama providers <id> --format agent` for that provider's use/avoid guidance, requirements, and capabilities.
 
 The `bahama` skill is the complete operating manual for agents.
 

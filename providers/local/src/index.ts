@@ -135,7 +135,15 @@ export const localProvider = defineProvider({
     for (const intent of req.intent) {
       const path = envPath(ctx.projectRoot, intent.config["envFile"]);
       const present = await exists(path);
-      resources.push({ resourceKey: intent.resourceKey, exists: present, healthy: present, detail: relative(ctx.projectRoot, path), drift: [] });
+      resources.push({
+        resourceKey: intent.resourceKey,
+        exists: present,
+        health: present
+          ? { state: "ready" as const }
+          : { state: "not_ready" as const, reason: "Local environment file has not been materialized." },
+        detail: relative(ctx.projectRoot, path),
+        drift: [],
+      });
     }
     return { resources };
   },

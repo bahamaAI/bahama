@@ -18,13 +18,13 @@ Works across Claude Code, Codex, Cursor, and all major coding agents — and wit
 
 Coding agents can write entire applications... but stall trying to get them online. They don't know each provider's unique quirks or how to make them work together, so they hand the hard parts back to you: _log into the dashboard, create a database, paste me the connection string_. **You end up working for your agent.**
 
-Bahama flips that. It teaches agents to operate cloud resources along three principles:
+Bahama flips that. It teaches agents to operate cloud resources with three objectives:
 
-1. **Gives agents a structured way to manage cloud services**: provision DBs, manage environment variables, run deployments, and more. It makes agents as good at deploying code as they are at writing it.
+1. **Give agents a structured way to manage cloud services**: choose providers, provision DBs and storage, handle connection strings, run deployments, and more. It makes agents as good at deploying code as they are at writing it.
 
-2. **Creates an open standard that works across providers**. No lock-in to one web host. Bahama is built from blocks that you and your agent can compose to best fit the project. Cloudflare + Mongo? Vercel + Supabase + S3? All-in-one Bahama Cloud? They all work the same with `bahama deploy`.
+2. **Create an open standard that works across providers**. No lock-in to one web host. Bahama is built from blocks that you and your agent can compose to best fit the project. Cloudflare + Mongo? Vercel + Supabase + S3? All-in-one Bahama Cloud? They all work the same with `bahama deploy`.
 
-3. **Keeps you in control**. Agents do the work, but you always link your cloud accounts yourself and approve consequential decisions. Sensitive API keys and connection strings are passed securely.
+3. **Keep users in control**. Agents do the work, but you always authenticate your cloud accounts manually and approve consequential decisions. Sensitive API keys and connection strings are handled securely.
 
 ## Quickstart
 
@@ -36,7 +36,7 @@ Bahama is built to be used by agents. To get started, just prompt your coding ag
 Read https://bahama.ai/install.md and install Bahama for this workspace.
 ```
 
-Or install both pieces directly:
+Or install both pieces manually:
 
 ```bash
 npx -y skills add bahamaAI/bahama --skill bahama --yes
@@ -46,15 +46,13 @@ npx -y skills add bahamaAI/bahama --skill bahama --yes
 npm install -g bahama
 ```
 
-The skill teaches your agent how to use Bahama; the CLI safely orchestrates the magic. From there, just ask for outcomes and mention Bahama:
+The skill teaches your agent how to use Bahama. The CLI safely orchestrates the magic. From there, just ask your AI for outcomes and mention Bahama:
 
-```text
-Let's build a snake game. I want a DB to save high scores. When it's ready, put it on the web with Bahama so I can share it with my friends.
-```
+> Let's build a snake game. I want a DB to save high scores. When it's ready, put it on the web with Bahama so I can share it with my friends.
 
 ## How it works
 
-Nine small commands cover the whole lifecycle — and they work the same on every provider. Most of the time your agent runs these commands behind the scenes. You work with the agent to define the best plan, you approve, and your app is live.
+Nine commands cover the whole lifecycle — and they work the same on every provider. Most of the time your agent runs these commands behind the scenes. You work with the agent to define the best plan, you approve, and your app is live.
 
 | Command                             | What it does                                                     |
 | :---------------------------------- | :--------------------------------------------------------------- |

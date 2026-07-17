@@ -12,6 +12,8 @@ Use Neon when the application needs a standard Postgres connection string. Choos
 - Output: secret `connectionUrl`
 - Requirement: a Neon account and the official `neon` CLI
 
+Planning reads the `_bahama_migrations` ledger without modifying it. Fully applied migrations produce no migration step; pending files remain consequential, and the complete checked-in set is checksummed again at apply. If the ledger is temporarily unavailable, planning warns and safely falls back to the complete migration set.
+
 The [descriptor](./src/index.ts) is the authoritative agent-facing capability definition.
 
 ## Provider documentation

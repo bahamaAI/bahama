@@ -33,6 +33,7 @@ export type {
 } from "./context.js";
 export {
   defineProvider,
+  ProviderPlanError,
   type ProviderDriver,
   type ResourceIntent,
   type LockedIdentity,
@@ -45,6 +46,8 @@ export {
   type PlanOperation,
   type ExecutionInputs,
   type DriftFinding,
+  type ResourceHealthState,
+  type ResourceHealth,
   type ResourceStatus,
   type StatusReport,
 } from "./driver.js";

@@ -49,6 +49,22 @@ export function renderHuman(env: ResultEnvelope): string {
     }
   }
 
+  const resources = env.data["resources"];
+  if (Array.isArray(resources) && resources.length > 0) {
+    lines.push("");
+    lines.push("  Resources:");
+    for (const raw of resources) {
+      const resource = asResourceStatusLike(raw);
+      if (!resource) continue;
+      const reason = resource.health.reason ? ` — ${resource.health.reason}` : "";
+      const detail = resource.detail ? ` — ${resource.detail}` : "";
+      lines.push(`    ${resource.health.state.replace("_", " ")} ${resource.resourceKey}${reason}${detail}`);
+      for (const finding of resource.drift ?? []) {
+        lines.push(`      ${finding.severity === "material" ? "!" : "·"} ${finding.message}`);
+      }
+    }
+  }
+
   for (const requirement of env.requirements ?? []) {
     lines.push("");
     if (requirement.kind === "installation") {
@@ -69,15 +85,25 @@ export function renderHuman(env: ResultEnvelope): string {
     }
   }
 
+  const recovery = env.data["recovery"];
+  if (typeof recovery === "string" && recovery.trim() !== "") {
+    lines.push("");
+    lines.push(`  Recovery: ${recovery}`);
+  }
+
   for (const warning of env.warnings) {
     lines.push(`  warning: ${warning}`);
   }
 
   const planId = env.data["planId"];
-  if (typeof planId === "string" && env.status === "approval_required") {
+  if (
+    typeof planId === "string" &&
+    (env.status === "approval_required" || (env.command === "plan" && env.status === "succeeded"))
+  ) {
     lines.push("");
-    lines.push("  Approve this plan with:");
-    lines.push(`    bahama apply ${planId} --approved`);
+    const requiresApproval = Array.isArray(steps) && steps.some((raw) => asStepLike(raw)?.classification === "consequential");
+    lines.push(requiresApproval ? "  Approve this plan with:" : "  Apply this plan with:");
+    lines.push(`    bahama apply ${planId}${requiresApproval ? " --approved" : ""}`);
   }
 
   lines.push("");
@@ -103,4 +129,28 @@ function asStepLike(value: JsonValue): Pick<PlannedStep, "id" | "summary"> & Par
   const candidate = value as { id?: unknown; summary?: unknown };
   if (typeof candidate.id !== "string" || typeof candidate.summary !== "string") return null;
   return value as unknown as Pick<PlannedStep, "id" | "summary"> & Partial<PlannedStep>;
+}
+
+interface ResourceStatusLike {
+  resourceKey: string;
+  detail?: string;
+  health: { state: "ready" | "not_ready" | "unhealthy" | "unknown"; reason?: string };
+  drift?: Array<{ severity: "info" | "material"; message: string }>;
+}
+
+function asResourceStatusLike(value: JsonValue): ResourceStatusLike | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const health = candidate["health"];
+  if (
+    typeof candidate["resourceKey"] !== "string" ||
+    typeof health !== "object" ||
+    health === null ||
+    Array.isArray(health)
+  ) {
+    return null;
+  }
+  const state = (health as Record<string, unknown>)["state"];
+  if (state !== "ready" && state !== "not_ready" && state !== "unhealthy" && state !== "unknown") return null;
+  return value as unknown as ResourceStatusLike;
 }

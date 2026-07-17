@@ -35,6 +35,7 @@ Adding or changing a command: register in `src/bin.ts` → workflow in `src/comm
 - Exit codes are part of the interface: workflow states `0`, provider/operation failure `1`, invalid invocation or manifest `2`, internal failure `3`.
 - Stdout is the result channel. Verbose, redacted diagnostics belong on stderr.
 - Result messages are agent UX. Include the concrete next action in the envelope instead of relying on prose printed elsewhere.
+- Provider discovery is progressive: the unfiltered agent view stays compact; `providers <id>` carries the descriptor's complete use/avoid, requirements, and capability guidance.
 - `plan` is read-only and always stops for review. `deploy` may auto-apply only when core classifies every compiled step as routine.
 - Never accept a flag that turns `deploy` into an approval bypass.
 

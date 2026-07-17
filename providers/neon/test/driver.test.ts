@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   PlanRequest,
   PlannedStep,
@@ -18,9 +18,28 @@ import {
   countApplied,
   findDestructiveStatement,
   neonProvider,
+  pendingMigrations,
+  readMigrationLedger,
   runMigrations,
   type QueryExecutor,
 } from "../src/index.js";
+
+const pgMock = vi.hoisted(() => ({
+  connect: vi.fn(async () => undefined),
+  query: vi.fn(async (_sql: string, _params?: unknown[]) => ({ rows: [] as Array<Record<string, unknown>> })),
+  end: vi.fn(async () => undefined),
+}));
+
+vi.mock("pg", () => ({
+  default: {
+    Client: class {
+      constructor(_options: unknown) {}
+      connect() { return pgMock.connect(); }
+      query(sql: string, params?: unknown[]) { return pgMock.query(sql, params); }
+      end() { return pgMock.end(); }
+    },
+  },
+}));
 
 const CONNECTION_URL = "postgres://user:sekret@ep-cool-1.aws.neon.tech/neondb?sslmode=require";
 
@@ -239,6 +258,57 @@ describe("probe", () => {
     expect(result.observed["database"]).toEqual({ exists: true, projectId: "proj-123" });
   });
 
+  it("seals the connection string and reads the migration ledger during probe", async () => {
+    const root = await scratchDir();
+    const sql = "create table a (id int);";
+    await withMigrations(root, { "0001_init.sql": sql });
+    pgMock.connect.mockClear();
+    pgMock.end.mockClear();
+    pgMock.query.mockReset();
+    pgMock.query.mockImplementation(async (statement: string) => {
+      if (statement.startsWith("select to_regclass")) {
+        return { rows: [{ table_name: "_bahama_migrations" }] };
+      }
+      if (statement === "select name, checksum from _bahama_migrations") {
+        return { rows: [{ name: "0001_init.sql", checksum: checksumOf(sql) }] };
+      }
+      throw new Error(`Unexpected SQL: ${statement}`);
+    });
+    const { ctx, calls } = makeCtx(root, (cmd, args) => {
+      const line = args.join(" ");
+      if (line === "--version") return { stdout: "2.15.0" };
+      if (line === "me --output json") return { stdout: JSON.stringify({ id: "user-1", email: "dev@example.com" }) };
+      if (line === "orgs list --output json") return { stdout: "[]" };
+      if (line === "projects get proj-123 --output json") {
+        return { stdout: JSON.stringify({ id: "proj-123", name: "my-app" }) };
+      }
+      if (line === "connection-string --project-id proj-123") return { stdout: CONNECTION_URL };
+      return undefined;
+    });
+
+    const result = await neonProvider.probe(ctx, {
+      intent: [DB_INTENT],
+      locked: [{ resourceKey: "database", identity: { projectId: "proj-123" } }],
+    });
+
+    expect(result.observed["database"]).toEqual({
+      exists: true,
+      projectId: "proj-123",
+      migrationLedger: "read",
+      appliedMigrations: [{ name: "0001_init.sql", checksum: checksumOf(sql) }],
+    });
+    const connection = calls.find((call) => call.args[0] === "connection-string")!;
+    expect(connection.options?.captureSecretStdout).toEqual({ name: "database.connectionUrl" });
+    expect(JSON.stringify(result)).not.toContain("sekret");
+    expect(JSON.stringify(result)).not.toContain("neon.tech");
+    expect(pgMock.connect).toHaveBeenCalledOnce();
+    expect(pgMock.end).toHaveBeenCalledOnce();
+    expect(pgMock.query.mock.calls.map(([statement]) => statement)).toEqual([
+      "select to_regclass($1) as table_name",
+      "select name, checksum from _bahama_migrations",
+    ]);
+  });
+
   it("auto-selects a sole org as the active account and project scope", async () => {
     const root = await scratchDir();
     const handler: RunHandler = (cmd, args) => {
@@ -388,6 +458,66 @@ describe("plan", () => {
           { name: "0001_init.sql", checksum: checksumOf("create table a (id int);") },
           { name: "0002_more.sql", checksum: checksumOf("create table b (id int);") },
         ],
+        pending: ["0001_init.sql", "0002_more.sql"],
+      },
+    });
+  });
+
+  it("omits the migrate step when every checked-in migration is recorded", async () => {
+    const root = await scratchDir();
+    const sql = "create table a (id int);";
+    await withMigrations(root, { "0001_init.sql": sql });
+    const { ctx } = makeCtx(root, () => undefined);
+    const contribution = await neonProvider.plan(
+      ctx,
+      planRequest({
+        probe: probed({
+          observed: {
+            database: {
+              exists: true,
+              projectId: "proj-123",
+              migrationLedger: "read",
+              appliedMigrations: [{ name: "0001_init.sql", checksum: checksumOf(sql) }],
+            },
+          },
+        }),
+        locked: [{ resourceKey: "database", identity: { projectId: "proj-123" } }],
+      }),
+    );
+    expect(contribution.steps.map((step) => step.id)).toEqual(["database-ensure"]);
+    expect(contribution.warnings).toBeUndefined();
+  });
+
+  it("plans only pending migrations while hashing the complete migration set", async () => {
+    const root = await scratchDir();
+    const first = "create table a (id int);";
+    const second = "create table b (id int);";
+    await withMigrations(root, { "0001_init.sql": first, "0002_more.sql": second });
+    const { ctx } = makeCtx(root, () => undefined);
+    const contribution = await neonProvider.plan(
+      ctx,
+      planRequest({
+        probe: probed({
+          observed: {
+            database: {
+              exists: true,
+              projectId: "proj-123",
+              migrationLedger: "read",
+              appliedMigrations: [{ name: "0001_init.sql", checksum: checksumOf(first) }],
+            },
+          },
+        }),
+        locked: [{ resourceKey: "database", identity: { projectId: "proj-123" } }],
+      }),
+    );
+    expect(contribution.steps[1]).toMatchObject({
+      summary: "Apply 1 pending SQL migration(s) to `my-app`",
+      inputs: {
+        files: [
+          { name: "0001_init.sql", checksum: checksumOf(first) },
+          { name: "0002_more.sql", checksum: checksumOf(second) },
+        ],
+        pending: ["0002_more.sql"],
       },
     });
   });
@@ -548,6 +678,31 @@ describe("migration executor", () => {
     expect(await countApplied(["0001_init.sql", "0002_more.sql"], exec)).toBe(2);
   });
 
+  it("reads an absent or existing migration ledger without mutating it", async () => {
+    const absent: QueryExecutor = async () => ({ rows: [{ table_name: null }] });
+    expect(await readMigrationLedger(absent)).toEqual([]);
+
+    const statements: string[] = [];
+    const existing: QueryExecutor = async (sql) => {
+      statements.push(sql);
+      return sql.startsWith("select to_regclass")
+        ? { rows: [{ table_name: "_bahama_migrations" }] }
+        : { rows: [{ name: "0001_init.sql", checksum: "sha256:abc" }] };
+    };
+    expect(await readMigrationLedger(existing)).toEqual([
+      { name: "0001_init.sql", checksum: "sha256:abc" },
+    ]);
+    expect(statements.every((sql) => /^select /i.test(sql))).toBe(true);
+  });
+
+  it("rejects changed applied migrations while selecting pending files", () => {
+    const files = [{ name: "0001_init.sql", sql: "create table a (id int);" }];
+    expect(pendingMigrations(files, [])).toEqual(files);
+    expect(() => pendingMigrations(files, [{ name: "0001_init.sql", checksum: "sha256:wrong" }])).toThrow(
+      /edited after it was applied/,
+    );
+  });
+
   it("rolls back and reports the failing migration", async () => {
     const statements: string[] = [];
     const exec: QueryExecutor = async (sql) => {
@@ -669,7 +824,10 @@ describe("status", () => {
       intent: [DB_INTENT],
       locked: [{ resourceKey: "database", identity: { projectId: "proj-gone" } }],
     });
-    expect(report.resources[0]).toMatchObject({ exists: false, healthy: false });
+    expect(report.resources[0]).toMatchObject({
+      exists: false,
+      health: { state: "unhealthy", reason: expect.stringContaining("no longer exists") },
+    });
     expect(report.resources[0]!.drift[0]).toMatchObject({
       severity: "material",
       message: expect.stringContaining("proj-gone"),
@@ -687,6 +845,24 @@ describe("status", () => {
       intent: [DB_INTENT],
       locked: [{ resourceKey: "database", identity: { projectId: "proj-123" } }],
     });
-    expect(report.resources[0]).toMatchObject({ exists: true, healthy: true, detail: "my-app", drift: [] });
+    expect(report.resources[0]).toMatchObject({ exists: true, health: { state: "ready" }, detail: "my-app", drift: [] });
+  });
+
+  it("reports an unknown check instead of deletion drift when lookup fails", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, (cmd, args) => {
+      if (args.join(" ") === "projects get proj-123 --output json")
+        return { exitCode: 1, stderr: "authentication expired" };
+      return undefined;
+    });
+    const report = await neonProvider.status(ctx, {
+      intent: [DB_INTENT],
+      locked: [{ resourceKey: "database", identity: { projectId: "proj-123" } }],
+    });
+    expect(report.resources[0]).toMatchObject({
+      exists: false,
+      health: { state: "unknown", reason: expect.stringContaining("lookup failed") },
+      drift: [],
+    });
   });
 });

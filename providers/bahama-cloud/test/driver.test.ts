@@ -730,7 +730,7 @@ describe("status", () => {
       intent: [APP_INTENT],
       locked: [{ resourceKey: "application", identity: { slug: "my-app" } }],
     });
-    expect(report.resources[0]).toMatchObject({ exists: false, healthy: false });
+    expect(report.resources[0]).toMatchObject({ exists: false, health: { state: "unhealthy" } });
     expect(report.resources[0]!.drift[0]).toMatchObject({ severity: "material" });
   });
 
@@ -747,7 +747,21 @@ describe("status", () => {
         { resourceKey: "database", identity: { slug: "my-app", binding: "DB" } },
       ],
     });
-    expect(report.resources[0]).toMatchObject({ exists: true, healthy: true, detail: "https://my-app.proj.test" });
-    expect(report.resources[1]).toMatchObject({ exists: true, healthy: true, detail: "env.DB" });
+    expect(report.resources[0]).toMatchObject({ exists: true, health: { state: "ready" }, detail: "https://my-app.proj.test" });
+    expect(report.resources[1]).toMatchObject({ exists: true, health: { state: "ready" }, detail: "env.DB" });
+  });
+
+  it("reports an unknown check instead of deletion drift when the API fails", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => ({ status: 523, body: { ok: false, error: "origin unavailable" } }));
+    const report = await bahamaCloudProvider.status(ctx, {
+      intent: [APP_INTENT],
+      locked: [{ resourceKey: "application", identity: { slug: "my-app" } }],
+    });
+    expect(report.resources[0]).toMatchObject({
+      exists: false,
+      health: { state: "unknown", reason: expect.stringContaining("HTTP 523") },
+      drift: [],
+    });
   });
 });

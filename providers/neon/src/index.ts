@@ -16,6 +16,7 @@ import {
   type ProbeResult,
   type ProviderAccount,
   type ProviderContext,
+  ProviderPlanError,
   type ResourceIntent,
   type ResourceStatus,
   type SecretRef,
@@ -27,7 +28,11 @@ import {
   assertNonDestructive,
   checksumOf,
   countApplied,
+  pendingMigrations,
+  readMigrationLedger,
   runMigrations,
+  type AppliedMigration,
+  MigrationHistoryError,
   type MigrationFile,
   type QueryExecutor,
 } from "./migrations.js";
@@ -36,11 +41,15 @@ export {
   assertNonDestructive,
   checksumOf,
   countApplied,
+  pendingMigrations,
+  readMigrationLedger,
   findDestructiveStatement,
   runMigrations,
   MIGRATIONS_TABLE,
   type MigrationFile,
   type MigrationSummary,
+  MigrationHistoryError,
+  type AppliedMigration,
   type QueryExecutor,
 } from "./migrations.js";
 
@@ -202,6 +211,48 @@ function readMigrationFiles(projectRoot: string): MigrationFile[] {
   return names.map((name) => ({ name, sql: readFileSync(join(dir, name), "utf8") }));
 }
 
+async function inspectMigrationLedger(
+  ctx: ProviderContext,
+  bin: string,
+  projectId: string,
+  resourceKey: string,
+): Promise<JsonObject> {
+  const connection = await ctx.run.run(bin, ["connection-string", "--project-id", projectId], {
+    captureSecretStdout: { name: `${resourceKey}.connectionUrl` },
+  });
+  if (connection.exitCode !== 0 || !connection.secret) return { migrationLedger: "unavailable" };
+
+  try {
+    const applied = await ctx.secrets.use(connection.secret, async (raw) => {
+      const client = new pg.Client({ connectionString: raw, ssl: { rejectUnauthorized: true } });
+      await client.connect();
+      try {
+        const exec: QueryExecutor = (sql, params) => client.query(sql, params as unknown[]);
+        return readMigrationLedger(exec);
+      } finally {
+        await client.end();
+      }
+    });
+    return {
+      migrationLedger: "read",
+      appliedMigrations: applied.map((entry) => ({ name: entry.name, checksum: entry.checksum })),
+    };
+  } catch {
+    return { migrationLedger: "unavailable" };
+  }
+}
+
+function appliedMigrationsFrom(observed: JsonObject | undefined): AppliedMigration[] | null {
+  if (observed?.["migrationLedger"] !== "read" || !Array.isArray(observed["appliedMigrations"])) return null;
+  return observed["appliedMigrations"].flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return [];
+    const name = entry["name"];
+    const checksum = entry["checksum"];
+    if (typeof name !== "string" || (typeof checksum !== "string" && checksum !== null)) return [];
+    return [{ name, checksum }];
+  });
+}
+
 /**
  * Ensure semantics: create when absent (consequential), adopt when live but
  * unlocked (consequential), verify when live AND locked (routine read).
@@ -229,6 +280,10 @@ function fail(message: string, recovery?: string): StepOutcome {
 function errText(stderr: string, stdout: string): string {
   const text = (stderr.trim() || stdout.trim()).split(/\r?\n/).slice(-3).join(" ");
   return text === "" ? "(no output)" : text;
+}
+
+function isNotFoundError(stderr: string, stdout: string): boolean {
+  return /\b(404|not found|does not exist)\b/i.test(`${stderr}\n${stdout}`);
 }
 
 /* -------------------------------- step execution ------------------------- */
@@ -431,9 +486,9 @@ export const neonProvider = defineProvider({
     description:
       "Serverless Postgres on the user's own Neon account, driven through the official neon CLI. Produces a sealed Postgres connection string and applies checked-in SQL migrations.",
     useWhen:
-      "The project needs real Postgres (a connection string the app consumes) on the user's own Neon account — e.g. Next.js on Vercel with Neon as the database.",
+      "The application needs Postgres through a standard connection string, including for local development or an external host, and may use checked-in SQL migrations.",
     avoidWhen:
-      "The stack is fully managed Bahama Cloud (use its built-in D1), or the project needs a non-Postgres engine.",
+      "The application needs a different data model or engine, or it needs a provider-native runtime binding instead of a connection string.",
     requirements: ["Neon account (https://neon.tech)", `neon CLI (${INSTALL_HINT})`],
     engines: ["postgres"],
     produces: [
@@ -508,13 +563,21 @@ export const neonProvider = defineProvider({
     }
 
     const observed: JsonObject = {};
+    const migrationFiles = readMigrationFiles(ctx.projectRoot);
     for (const intent of req.intent) {
       if (intent.role !== "database") continue;
       const pinnedId = lockedProjectId(req, intent.resourceKey);
       if (pinnedId) {
         const got = await ctx.run.run(bin, ["projects", "get", pinnedId, "--output", "json"]);
-        observed[intent.resourceKey] =
-          got.exitCode === 0 ? { exists: true, projectId: pinnedId } : { exists: false };
+        observed[intent.resourceKey] = got.exitCode === 0
+          ? {
+              exists: true,
+              projectId: pinnedId,
+              ...(migrationFiles.length > 0
+                ? await inspectMigrationLedger(ctx, bin, pinnedId, intent.resourceKey)
+                : {}),
+            }
+          : { exists: false };
         continue;
       }
       const name = resolveName(intent);
@@ -530,7 +593,15 @@ export const neonProvider = defineProvider({
         listed.exitCode === 0 && name
           ? (parseProjectList(listed.stdout).find((p) => p.name === name) ?? null)
           : null;
-      observed[intent.resourceKey] = match ? { exists: true, projectId: match.id } : { exists: false };
+      observed[intent.resourceKey] = match
+        ? {
+            exists: true,
+            projectId: match.id,
+            ...(migrationFiles.length > 0
+              ? await inspectMigrationLedger(ctx, bin, match.id, intent.resourceKey)
+              : {}),
+          }
+        : { exists: false };
     }
 
     return {
@@ -595,18 +666,34 @@ export const neonProvider = defineProvider({
       });
 
       const migrations = readMigrationFiles(ctx.projectRoot);
-      if (migrations.length > 0) {
+      const applied = appliedMigrationsFrom(observed);
+      let pending: MigrationFile[];
+      try {
+        pending = applied === null ? migrations : pendingMigrations(migrations, applied);
+      } catch (error) {
+        if (error instanceof MigrationHistoryError) throw new ProviderPlanError(error.message);
+        throw error;
+      }
+      if (migrations.length > 0 && applied === null && exists) {
+        warnings.push(
+          `Could not inspect the migration ledger for \`${intent.resourceKey}\`; the plan includes all checked-in migrations and execution will skip those already recorded.`,
+        );
+      }
+      if (pending.length > 0) {
         steps.push({
           id: `${intent.resourceKey}-migrate`,
           action: "neon.migrations.apply",
-          summary: `Apply ${migrations.length} checked-in SQL migration(s) to \`${name}\``,
+          summary: `Apply ${pending.length} pending SQL migration(s) to \`${name}\``,
           resourceKey: intent.resourceKey,
           effects: { migratesSchema: true },
           dependsOn: [ensureId],
           consumes: [`resources.${intent.resourceKey}.connectionUrl`],
           // Name AND content hash: approving this plan approves this exact
           // SQL, and execution rejects files that changed afterwards.
-          inputs: { files: migrations.map((file) => ({ name: file.name, checksum: checksumOf(file.sql) })) },
+          inputs: {
+            files: migrations.map((file) => ({ name: file.name, checksum: checksumOf(file.sql) })),
+            pending: pending.map((file) => file.name),
+          },
           postcondition: "All checked-in migrations are recorded as applied in _bahama_migrations.",
         });
       }
@@ -640,7 +727,7 @@ export const neonProvider = defineProvider({
         resources.push({
           resourceKey: intent.resourceKey,
           exists: false,
-          healthy: "unknown",
+          health: { state: "unknown", reason: "Neon CLI is not installed." },
           detail: "neon CLI not installed",
           drift: [],
         });
@@ -650,11 +737,23 @@ export const neonProvider = defineProvider({
       if (pinnedId) {
         const got = await ctx.run.run(bin, ["projects", "get", pinnedId, "--output", "json"]);
         const exists = got.exitCode === 0;
+        if (!exists && !isNotFoundError(got.stderr, got.stdout)) {
+          resources.push({
+            resourceKey: intent.resourceKey,
+            exists: false,
+            health: { state: "unknown", reason: "Neon project lookup failed; check authentication." },
+            detail: "lookup failed",
+            drift: [],
+          });
+          continue;
+        }
         const project = exists ? parseProject(got.stdout) : null;
         resources.push({
           resourceKey: intent.resourceKey,
           exists,
-          healthy: exists ? true : false,
+          health: exists
+            ? { state: "ready" }
+            : { state: "unhealthy", reason: "Locked Neon project no longer exists." },
           ...(project?.name ? { detail: project.name } : {}),
           drift: exists
             ? []
@@ -681,7 +780,7 @@ export const neonProvider = defineProvider({
         resources.push({
           resourceKey: intent.resourceKey,
           exists: false,
-          healthy: "unknown",
+          health: { state: "unknown", reason: "Neon project lookup failed; check authentication." },
           detail: "not authenticated",
           drift: [],
         });
@@ -691,7 +790,9 @@ export const neonProvider = defineProvider({
       resources.push({
         resourceKey: intent.resourceKey,
         exists: match !== null,
-        healthy: match !== null,
+        health: match
+          ? { state: "ready" }
+          : { state: "not_ready", reason: "Neon project has not been provisioned." },
         ...(match ? { detail: match.name } : {}),
         drift: [],
       });

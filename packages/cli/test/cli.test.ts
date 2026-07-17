@@ -44,6 +44,15 @@ beforeAll(async () => {
 describe("bahama CLI golden path (test provider)", () => {
   let planId: string;
 
+  it("reports the package version embedded by the build", async () => {
+    const packageVersion = JSON.parse(
+      await readFile(resolve(fileURLToPath(import.meta.url), "../../package.json"), "utf8"),
+    ) as { version: string };
+    const result = await execa("node", [BIN, "--version"], { reject: false });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(packageVersion.version);
+  });
+
   it("init writes a valid manifest and gitignores .bahama/", async () => {
     const { exitCode, env } = await bahama(root, [
       "init",
@@ -104,6 +113,29 @@ describe("bahama CLI golden path (test provider)", () => {
     expect(await readFile(join(root, ".env.local"), "utf8")).toContain("DATABASE_URL=");
   });
 
+  it("reports an all-routine plan as succeeded without auto-applying it", async () => {
+    const result = await bahama(root, ["plan"]);
+    expect(result.env!.status).toBe("succeeded");
+    expect(result.env!.data["planId"]).toEqual(expect.any(String));
+    expect(result.env!.data["consequentialSteps"]).toBe(0);
+  });
+
+  it("status distinguishes a provisioned but undeployed application from drift", async () => {
+    const { exitCode, env } = await bahama(root, ["status"]);
+    expect(exitCode).toBe(0);
+    expect(env!.status).toBe("succeeded");
+    expect(env!.message).toContain("1 not ready");
+    expect(env!.message).toContain("no material drift");
+    const resources = env!.data["resources"] as Array<{
+      resourceKey: string;
+      health: { state: string; reason?: string };
+    }>;
+    expect(resources.find((resource) => resource.resourceKey === "environment.production")?.health).toEqual({
+      state: "not_ready",
+      reason: "Application has not been deployed.",
+    });
+  });
+
   it("first deploy stops for approval, then later deploys use the routine fast path", async () => {
     const first = await bahama(root, ["deploy"]);
     expect(first.exitCode).toBe(0);
@@ -131,6 +163,9 @@ describe("bahama CLI golden path (test provider)", () => {
     const { exitCode, env } = await bahama(root, ["status"]);
     expect(exitCode).toBe(0);
     expect(env!.status).toBe("succeeded");
+    expect(env!.message).toContain("3 ready");
+    const resources = env!.data["resources"] as Array<{ health: { state: string } }>;
+    expect(resources.every((resource) => resource.health.state === "ready")).toBe(true);
   });
 
   it("auth status reports the test session", async () => {
@@ -139,14 +174,28 @@ describe("bahama CLI golden path (test provider)", () => {
     expect(env!.data["identity"]).toBe("default-account");
   });
 
-  it("providers --format agent emits model-facing prose", async () => {
+  it("providers --format agent emits a compact capability index", async () => {
     const result = await execa("node", [BIN, "providers", "--format", "agent"], {
       cwd: root,
       env: { BAHAMA_ENABLE_TEST: "1" },
       reject: false,
     });
-    expect(result.stdout).toContain("Use when:");
+    expect(result.stdout).toContain("## Application hosts");
+    expect(result.stdout).toContain("## Databases");
     expect(result.stdout).toContain("`test`");
+    expect(result.stdout).not.toContain("Use when:");
+    expect(result.stdout).toContain("bahama providers <id> --format agent");
+  });
+
+  it("targeted provider discovery includes use and avoid guidance", async () => {
+    const result = await execa("node", [BIN, "providers", "test", "--format", "agent"], {
+      cwd: root,
+      env: { BAHAMA_ENABLE_TEST: "1" },
+      reject: false,
+    });
+    expect(result.stdout).toContain("Use when:");
+    expect(result.stdout).toContain("Avoid when:");
+    expect(result.stdout).toContain("Produces:");
   });
 
   it("does not expose the internal test provider by default", async () => {

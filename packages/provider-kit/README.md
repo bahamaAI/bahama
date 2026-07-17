@@ -92,11 +92,14 @@ This illustrates the contract shape, not a complete provider. Use the repository
 | `execute` | Yes | Execute one previously planned step and verify its postcondition before returning success |
 | `status` | No | Read authoritative live state and report normalized existence, health, detail, and drift |
 
+Resource health is one of `ready`, `not_ready`, `unhealthy`, or `unknown`, with a short reason whenever it is not ready. Health describes usability; drift separately describes a mismatch with committed identity or intent.
+
 Provider methods never prompt. Missing tools, authentication, or account choices are returned as typed workflow data.
+If an expected provider-owned condition makes planning impossible, throw `ProviderPlanError` with an actionable message. Do not use it for programming errors; unexpected exceptions retain the CLI's internal-error path.
 
 ## Descriptors are agent-facing
 
-`ProviderDescriptor` is what `bahama providers --format agent` turns into model-readable provider guidance. Keep these fields accurate:
+`ProviderDescriptor` supplies the compact provider catalog and the detailed guidance returned by `bahama providers <id> --format agent`. Keep these fields accurate:
 
 - `roles`: `environment`, `application`, `database`, or `service`.
 - `description`: what the provider actually controls.

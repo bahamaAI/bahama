@@ -625,9 +625,9 @@ export const vercelProvider = defineProvider({
     description:
       "Deploys applications on the user's own Vercel account through the official vercel CLI: project ensure/adopt, sealed production env transfers, prod deploys with readiness polling.",
     useWhen:
-      "The application is Next.js (or a Vite/static frontend) and should run on the user's own Vercel account — the golden path pairs it with Neon Postgres via a sealed DATABASE_URL binding.",
+      "The application uses a supported framework and should run on the user's own Vercel account, with any declared server-side variables transferred during deployment.",
     avoidWhen:
-      "The stack should be fully managed Bahama Cloud, or the app is a plain Workers-style API better served elsewhere.",
+      "The application uses an unsupported runtime or the user wants a different host or account boundary.",
     requirements: ["Vercel account (https://vercel.com)", `vercel CLI (${INSTALL_HINT})`],
     frameworks: ["nextjs", "vite-spa", "static-site"],
     produces: [
@@ -918,7 +918,7 @@ export const vercelProvider = defineProvider({
         resources.push({
           resourceKey: intent.resourceKey,
           exists: false,
-          healthy: "unknown",
+          health: { state: "unknown", reason: "Vercel CLI is not installed." },
           detail: "vercel CLI not installed",
           drift: [],
         });
@@ -931,7 +931,7 @@ export const vercelProvider = defineProvider({
         resources.push({
           resourceKey: intent.resourceKey,
           exists: false,
-          healthy: "unknown",
+          health: { state: "unknown", reason: "Vercel project name could not be resolved." },
           detail: "project name unresolved",
           drift: [],
         });
@@ -942,7 +942,7 @@ export const vercelProvider = defineProvider({
         resources.push({
           resourceKey: intent.resourceKey,
           exists: false,
-          healthy: "unknown",
+          health: { state: "unknown", reason: "Vercel project lookup failed; check authentication." },
           detail: "lookup failed (check vercel login)",
           drift: [],
         });
@@ -952,7 +952,9 @@ export const vercelProvider = defineProvider({
         resources.push({
           resourceKey: intent.resourceKey,
           exists: false,
-          healthy: false,
+          health: pinnedId
+            ? { state: "unhealthy", reason: "Locked Vercel project no longer exists." }
+            : { state: "not_ready", reason: "Vercel project has not been provisioned." },
           drift: pinnedId
             ? [
                 {
@@ -970,7 +972,9 @@ export const vercelProvider = defineProvider({
       resources.push({
         resourceKey: intent.resourceKey,
         exists: true,
-        healthy: url ? true : "unknown",
+        health: url
+          ? { state: "ready" }
+          : { state: "not_ready", reason: "Application has not been deployed to production." },
         ...(url ? { detail: url } : {}),
         drift: [],
       });

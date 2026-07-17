@@ -29,6 +29,18 @@ export interface MigrationSummary {
   alreadyApplied: string[];
 }
 
+export interface AppliedMigration {
+  name: string;
+  checksum: string | null;
+}
+
+export class MigrationHistoryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MigrationHistoryError";
+  }
+}
+
 export const MIGRATIONS_TABLE = "_bahama_migrations";
 
 /**
@@ -58,6 +70,33 @@ export function assertNonDestructive(files: MigrationFile[]): void {
   }
 }
 
+/** Read-only ledger inspection used during probe; an absent table means none applied. */
+export async function readMigrationLedger(exec: QueryExecutor): Promise<AppliedMigration[]> {
+  const table = await exec("select to_regclass($1) as table_name", [MIGRATIONS_TABLE]);
+  if (table.rows[0]?.["table_name"] == null) return [];
+  const recorded = await exec(`select name, checksum from ${MIGRATIONS_TABLE}`);
+  return recorded.rows.flatMap((row) => {
+    if (typeof row["name"] !== "string") return [];
+    return [{ name: row["name"], checksum: row["checksum"] == null ? null : String(row["checksum"]) }];
+  });
+}
+
+/** Returns unapplied files and rejects edits to migration history. */
+export function pendingMigrations(files: MigrationFile[], recorded: AppliedMigration[]): MigrationFile[] {
+  const done = new Map(recorded.map((entry) => [entry.name, entry.checksum]));
+  return files.filter((file) => {
+    const recordedChecksum = done.get(file.name);
+    if (recordedChecksum === undefined) return true;
+    if (recordedChecksum !== null && recordedChecksum !== checksumOf(file.sql)) {
+      throw new MigrationHistoryError(
+        `${file.name} was edited after it was applied (checksum mismatch). ` +
+          "Applied migrations are immutable — add a new migration instead.",
+      );
+    }
+    return false;
+  });
+}
+
 /**
  * Applies every unapplied migration in name order, each inside its own
  * transaction that also records the ledger row — a migration and its
@@ -79,22 +118,16 @@ export async function runMigrations(
       "name text primary key, checksum text, applied_at timestamptz not null default now())",
   );
   const recorded = await exec(`select name, checksum from ${MIGRATIONS_TABLE}`);
-  const done = new Map<string, string | null>();
-  for (const row of recorded.rows) {
-    done.set(String(row["name"]), row["checksum"] == null ? null : String(row["checksum"]));
-  }
+  const appliedLedger = recorded.rows.map((row) => ({
+    name: String(row["name"]),
+    checksum: row["checksum"] == null ? null : String(row["checksum"]),
+  }));
+  const pending = new Set(pendingMigrations(files, appliedLedger).map((file) => file.name));
 
   const applied: string[] = [];
   const alreadyApplied: string[] = [];
   for (const file of files) {
-    const recordedChecksum = done.get(file.name);
-    if (recordedChecksum !== undefined) {
-      if (recordedChecksum !== null && recordedChecksum !== checksumOf(file.sql)) {
-        throw new Error(
-          `${file.name} was edited after it was applied (checksum mismatch). ` +
-            "Applied migrations are immutable — add a new migration instead.",
-        );
-      }
+    if (!pending.has(file.name)) {
       alreadyApplied.push(file.name);
       continue;
     }

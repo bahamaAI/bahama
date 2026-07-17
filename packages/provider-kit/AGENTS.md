@@ -20,10 +20,11 @@ Provider-kit contains contracts only. It must not import core, CLI, a provider i
 - Descriptor prose is machine-facing product behavior. `description`, `useWhen`, `avoidWhen`, requirements, frameworks, engines, and capabilities must be precise enough for a model to choose correctly.
 - Capabilities are provider-neutral. Do not name another provider in a capability or add pairwise integration types.
 - Providers declare semantic effects; they never declare routine/consequential classification.
-- `probe` and `plan` are read-only. `execute` performs one planned step and verifies its postcondition. `status` reports authoritative live state and drift.
+- `probe` and `plan` are read-only. `execute` performs one planned step and verifies its postcondition. `status` reports authoritative live state, normalized health with a reason, and drift.
 - Persisted and returned provider data is JSON-compatible. `SecretRef` is the explicit opaque exception for secret capability values.
 - `ProviderContext` is the complete provider authority boundary. Additions are security- and compatibility-sensitive.
 - Decisions describe a meaningful unresolved choice and, when possible, provide a manifest `writeBack` path. Requirements describe installation or authentication work; neither is an exception.
+- `ProviderPlanError` is only for an expected provider-owned condition that prevents compilation. Do not wrap programming errors or unexpected exceptions in it.
 - A successful `StepOutcome` must be safe to journal and must set `postconditionVerified` only after a live check.
 - `defineProvider` is a type-shaping helper, not registration. The current CLI bundles a static official-provider registry.
 

@@ -6,6 +6,8 @@ import { runInit } from "./commands/init.js";
 import { runApply, runDeploy, runPlan } from "./commands/plan-apply.js";
 import { fail, type EmitOptions } from "./runtime.js";
 
+declare const __BAHAMA_VERSION__: string;
+
 /**
  * The Bahama CLI. Model-facing design rules:
  * - every command emits one typed ResultEnvelope (JSON with --json);
@@ -13,7 +15,7 @@ import { fail, type EmitOptions } from "./runtime.js";
  * - nothing ever waits on a TTY — missing input is a typed result.
  */
 const program = new Command("bahama")
-  .version("0.1.0-alpha.1")
+  .version(__BAHAMA_VERSION__)
   .description("Agent-native application infrastructure: declarative intent, deterministic plans, verified execution.");
 
 const projectRoot = process.cwd();
@@ -47,8 +49,8 @@ program
 
 program
   .command("providers")
-  .argument("[provider-id]", "show one provider")
-  .description("Describe available providers so the model can choose (no hidden ranking)")
+  .argument("[provider-id]", "show detailed guidance for one provider")
+  .description("List provider capabilities; pass an id for use/avoid and setup guidance")
   .option("--format <format>", "agent (prose) or json", "agent")
   .option("--json", "emit a JSON result envelope")
   .action(async (providerId: string | undefined, options: { json?: boolean; format: string }) => {

@@ -93,6 +93,14 @@ export interface PlanRequest {
   operation?: PlanOperation;
 }
 
+/** Expected provider-owned condition that prevents a plan from compiling. */
+export class ProviderPlanError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderPlanError";
+  }
+}
+
 /** Values resolved from dependency steps at execution time. */
 export interface ExecutionInputs {
   /**
@@ -109,10 +117,19 @@ export interface DriftFinding {
   message: string;
 }
 
+export type ResourceHealthState = "ready" | "not_ready" | "unhealthy" | "unknown";
+
+/** Provider-normalized operational health, separate from identity drift. */
+export interface ResourceHealth {
+  state: ResourceHealthState;
+  /** Short explanation when the state is not `ready`. */
+  reason?: string;
+}
+
 export interface ResourceStatus {
   resourceKey: string;
   exists: boolean;
-  healthy: boolean | "unknown";
+  health: ResourceHealth;
   /** Display detail, e.g. a deployment URL or branch name. */
   detail?: string;
   drift: DriftFinding[];

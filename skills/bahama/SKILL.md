@@ -1,207 +1,84 @@
 ---
 name: bahama
-description: Build, provision, test, package, and deploy web applications through Bahama, the agent-native infrastructure CLI. Use when creating, updating, or managing web apps whose infrastructure Bahama manages — on the managed Bahama Cloud or on the user's own provider accounts.
+description: Use Bahama to manage application infrastructure for this project. Use when choosing providers, creating databases, connecting resources to local or hosted environments, deploying an application, or troubleshooting a project that uses bahama.yaml.
 ---
 
 # Bahama
 
-Bahama is agent-native application infrastructure. The agent writes declarative intent in `bahama.yaml`; the `bahama` CLI compiles that intent into a deterministic, reviewable plan and executes it with verified postconditions. Use the Bahama CLI as the system of action. Do not call infrastructure provider APIs directly for normal Bahama workflows.
+Bahama is a command-line tool that creates and connects the infrastructure an application needs: databases, hosting, and the variables that link them. You decide the architecture; Bahama performs the provider operations, stops for user approval before anything consequential, and verifies each result.
 
-## Bahama CLI
+The project states what it wants in `bahama.yaml`. Bahama compares that with the real provider availability and plans the work needed to close the gap.
 
-The CLI should be installed before going further. Verify with `bahama doctor --json`. If the `bahama` binary is missing, stop and explain that the Bahama CLI is not installed. Do not invent auth, bypass provider login flows, or ask for credentials directly.
+First check that `bahama --version` works. If the command is missing, ask before installing it with `npm install -g bahama`.
 
-| Command | Purpose |
-| :-- | :-- |
-| `bahama inspect --json` | Report non-secret application facts (framework, scripts, env var names) for provider selection. |
-| `bahama providers [id] --format agent` | Describe available providers so the model can choose. Prose written for agents; no hidden ranking. |
-| `bahama init --name <n> --application <p> --framework <f> [--database <p>]` | Write a starter `bahama.yaml`. Never contacts providers, never creates a lock. |
-| `bahama plan --json` | Reconcile resources and bindings without deploying application code (planning itself is read-only). |
-| `bahama apply <plan-id> --approved --json` | Execute a compiled plan. Consequential steps require `--approved`. |
-| `bahama deploy [environment] --json` | Explicitly deploy one hosted environment; infer it only when exactly one exists. Stops for approval when needed. |
-| `bahama status --json` | Compare `bahama.lock` identity with live provider state and report drift. |
-| `bahama doctor --json` | Check the environment, manifest, and selected provider tools/sessions. |
-| `bahama auth login\|status\|logout <provider>` | Provider session management through official provider flows. |
-| `bahama detach --approved` | Intentionally forget the entire resolved stack without deleting provider resources. Fork/template reset only; never use for ordinary drift recovery. |
+When Bahama supports an operation, use it instead of calling provider tools directly — it keeps account choice, approval, saved identity, and verification in one workflow. If Bahama does not support something, explain the gap before working around it.
 
-Every command emits one typed result envelope; always pass `--json`. The envelope `status` is one of `succeeded`, `decision_required`, `installation_required`, `auth_required`, `approval_required`, `in_progress`, or `failed`. Expected workflow states exit 0 — a non-`succeeded` status is the next step in the workflow, not a crash.
+## Commands
 
-- `decision_required`: a choice is needed before a plan can compile. Each decision includes a `writeBack` path. Answer it by editing `bahama.yaml` at that path, then re-run `bahama plan`.
-- `installation_required`: a provider tool is missing; show the exact install, get permission for the machine-level change, install it, and retry.
-- `auth_required`: a provider session is missing; follow the auth protocol below.
-- `approval_required`: the plan has consequential steps; follow the approval protocol below.
+Use the concise default output for normal work. Use `--json` only when this guide calls for structured details—currently `inspect` and `status`—or when diagnosing information the readable output does not include. Expected workflow states may exit 0, so always read the reported status (the first line in concise output).
 
-When a provider exposes multiple accounts, `decision_required` is mandatory for a new project. Present every option, including personal and team/organization accounts, and write the user's selection to the supplied manifest path. Never silently choose the provider CLI's current/default account.
+| Command                                                                                              | Purpose                                                                                 |
+| :--------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------- |
+| `bahama inspect`                                                                                     | Report project facts (framework, scripts, env-var names). Reads no secret values.       |
+| `bahama providers [id] --format agent`                                                               | List provider compatibility; pass an id for detailed selection guidance.                |
+| `bahama init --name <name> --application <provider> --framework <framework> [--database <provider>]` | Write a starter `bahama.yaml`. Refuses if one exists — edit that file instead.          |
+| `bahama plan`                                                                                        | Read-only: compute the operations needed to match the manifest.                         |
+| `bahama apply <plan-id> [--approved]`                                                                | Execute a plan.                                                                         |
+| `bahama deploy [environment]`                                                                        | Publish application code to a hosted environment.                                       |
+| `bahama status`                                                                                      | Compare saved identities with live provider state.                                      |
+| `bahama doctor`                                                                                      | Check the manifest, provider tools, and login sessions.                                 |
+| `bahama auth login\|status\|logout <provider>`                                                       | Manage provider sessions. `--no-browser` prints headless instructions.                  |
+| `bahama detach --approved`                                                                           | Forget all saved identities without deleting anything remote. Forks and templates only. |
 
-### Approval Protocol
+## The workflow
 
-Plan steps are classified routine (redeploys, verified reads) or consequential (resource creation, migrations, account changes, secret rewiring). Before running `bahama apply <plan-id> --approved`:
+1. **Inspect.** `bahama inspect --json` reports the framework, scripts, env-var names, and existing Bahama files.
 
-1. Run `bahama plan --json` and read the compiled plan.
-2. Present the plan's consequential steps to the user — each step with its reason, and the provider accounts it acts on.
-3. Get the user's explicit confirmation.
-4. Only then run `bahama apply <plan-id> --approved --json`.
+2. **Choose providers.** Run `bahama providers --format agent` for the compact live catalog and match the application's needs using [provider-selection.md](references/provider-selection.md). For each serious candidate, run `bahama providers <id> --format agent` to read its use/avoid guidance, requirements, and capabilities. Then open only that provider's reference file. Discuss the choice with the user before writing it. Bahama Cloud is the default when it fully fits; never force it onto an unsupported framework.
 
-Never pass `--approved` without having shown the plan to the user. Never try to push consequential changes through `bahama deploy` to skip review — it refuses and stops with `approval_required` anyway. `bahama deploy` is for iteration on an already-provisioned stack.
+3. **Write `bahama.yaml`.** Read [manifest.md](references/manifest.md) first. `bahama init` starts a new project; otherwise edit the file directly, changing only what the task requires.
 
-`bahama detach` has its own approval boundary. Explain that it deletes nothing remotely, but removes all provider identities from the committed lock and may cause later plans to adopt or create replacements. Use it only when the user explicitly wants a copied repository/template to become a fresh stack. A missing live resource is handled by `bahama plan`; do not detach healthy resources to repair it.
+4. **Plan.** `bahama plan` is read-only. If the result asks for a tool install, login, or account decision, follow its instructions instead of guessing. A converged manifest may still produce routine reconciliation steps (all `·`); `ok` means no step needs approval, not necessarily an empty plan.
 
-### Auth Protocol
+5. **Approve, then apply.** Show the user every step and the accounts it touches. Steps marked `!` require approval and say why. After approval, run `bahama apply <plan-id> --approved`. If the plan contains only `·` steps and the task includes execution, apply without `--approved`. Approval covers only the plan the user just saw.
 
-When a result is `auth_required`, run `bahama auth login <provider> --json`. Bahama launches the official provider login or its own Cloud OAuth flow; tell the user to complete authorization in the browser or device page. The provider owns credential storage. In a headless environment use `--no-browser` and surface the URL/code. After completion, verify with `bahama auth status <provider> --json` or `bahama doctor --json` and continue. Never ask the user to paste a password, API token, or authorization code into chat.
+6. **Deploy when asked.** A plan from `bahama plan` sets up infrastructure only; it never publishes application code, so local development works without deploying. Publishing is `bahama deploy <environment>`. The first or infrastructure-changing deploy stops with a plan id to approve and apply; a code-only redeploy applies itself. Run `bahama status --json` when live state is unclear. Read [workflow.md](references/workflow.md) for new projects, adding resources later, and local-first development.
 
-## Project State
+## Reading results
 
-Every Bahama app is described by a repo-root `bahama.yaml` manifest. Alongside it, the CLI maintains resolved state:
+The first status line tells you the next move:
 
-| File | Author | Committed | Contents |
-| :-- | :-- | :-- | :-- |
-| `bahama.yaml` | the agent | yes | intent: project name, providers, framework, resources, bindings |
-| `bahama.lock` | the CLI | yes | resolved durable IDs, driver compatibility, repo fingerprint |
-| `.bahama/` | the CLI | no (gitignored) | plans, operation receipts, locks |
+| Status                  | What to do                                                                       |
+| :---------------------- | :------------------------------------------------------------------------------- |
+| `ok` (`succeeded` in JSON) | The command completed. Read its warnings before reporting the result.         |
+| `decision required`     | Present the choices, write the selected value to the stated path, and re-plan.   |
+| `installation required` | Ask before installing the returned provider tool, then retry.                    |
+| `auth required`         | Run `bahama auth login <provider>`; the user completes the provider's own flow.  |
+| `approval required`     | Show the plan, accounts, and consequential reasons before applying.              |
+| `in progress`           | Continue only as directed by the result.                                         |
+| `failed`                | Read the error and recovery guidance; see [recovery.md](references/recovery.md). |
 
-Separate application code, environments, resources, and bindings. `bahama plan` can add infrastructure for local development without publishing the application:
+## Project state
 
-```yaml
-version: 1
-project:
-  name: my-app            # lowercase letters, digits, hyphens
+You may edit `bahama.yaml`. The CLI owns everything else:
 
-application:
-  framework: vite-hono
+- `bahama.lock` — real provider accounts, resource IDs, and completed connections. Commit it; never hand-edit it.
+- `.bahama/` — local plans, receipts, and operation locks. Keep it gitignored and leave it alone.
+- Secret values never belong in source, the manifest, the lock, plans, logs, chat, or browser-visible variables. Never ask the user for connection strings, database credentials, or tokens — Bahama provisions and wires those values.
 
-environments:
-  local:
-    provider: local
-  production:
-    provider: bahama-cloud
+`bahama detach` forgets the entire lock but deletes nothing remotely. Use it only for an intentional fork or template reset, after explaining the risks. Read [recovery.md](references/recovery.md) before any detach or provider cleanup.
 
-resources:                # optional, keyed by name
-  database:
-    provider: bahama-cloud
-    engine: d1
-    environment: production
+## References
 
-bindings:
-  BAHAMA_API_BASE_URL:
-    from: environments.production.developmentApiBaseUrl
-    to: environments.local.variables
-  BAHAMA_PROJECT_SLUG:
-    from: environments.production.developmentProjectSlug
-    to: environments.local.variables
-  BAHAMA_DEV_TOKEN:
-    from: environments.production.developmentToken
-    to: environments.local.variables
-```
+Open these only when the task calls for them:
 
-Cross-provider stacks connect resources through `bindings`. Capability names come from `bahama providers <id>` — never invent them. For example, Next.js on Vercel with Neon Postgres:
-
-```yaml
-application:
-  framework: nextjs
-
-environments:
-  local:
-    provider: local
-  production:
-    provider: vercel
-
-resources:
-  database:
-    provider: neon
-    engine: postgres
-
-bindings:
-  DATABASE_URL:
-    from: resources.database.connectionUrl
-    to:
-      - environments.local.variables
-      - environments.production.variables
-```
-
-Never put resource IDs, account IDs, dev tokens, secrets, upload IDs, or deploy job IDs in `bahama.yaml`. ID-shaped fields such as `projectId` are rejected by the CLI — resolved identity lives in `bahama.lock`, which is CLI-generated and must never be hand-edited.
-
-The lock's durable IDs are authoritative. Provider-facing names may also be recorded for readable status and diagnostics, but agents must never use a display name in place of a locked ID. If a locked resource is confirmed missing, re-plan: Bahama creates or adopts its replacement and updates only that resource's identity while leaving healthy locked resources intact.
-
-## Provider Choice Workflow
-
-Before coding, provisioning, local testing, or deploying:
-
-1. Run `bahama inspect --json` to get the app's actual facts (or note the repo is empty/new).
-2. Run `bahama providers --format agent` to see what providers exist and what each is for.
-3. Treat each provider's reported `frameworks` list as the compatibility contract. Never pair a framework with a provider that does not list it. If the user's requested pair is unsupported, explain the mismatch and offer either a provider that lists the framework or a deliberate conversion to a listed framework.
-4. Choose providers with the user, based on that compatibility matrix and the user's preference: the managed Bahama Cloud, or their own provider accounts (for example `vercel` plus `neon` for a Next.js app). Do not choose silently.
-5. Write or edit `bahama.yaml` to match the choice. Use `bahama init` for a fresh project. `bahama plan` enforces the same compatibility contract and returns the provider's allowed frameworks if the pair is invalid.
-6. Run `bahama plan --json`. Resolve `decision_required`, `installation_required`, and `auth_required` results as described above.
-7. Present the plan and apply it per the approval protocol.
-8. Keep developing locally. Run `bahama deploy production --json` only when the user wants to publish.
-
-If `bahama.yaml` already exists, treat it as the intended setup for this folder and confirm it with `bahama status --json` before mutating resources or deploying. Never provision, query databases, create dev tokens, or direct the user to add project secrets until the manifest reflects an agreed provider choice.
-
-## Bahama Cloud Frameworks
-
-The guidance in this skill's reference files is the Bahama Cloud golden path: it applies when a hosted environment uses `provider: bahama-cloud`. Other providers follow the generic inspect → providers → plan → apply workflow above, plus the provider-specific guidance from `bahama providers <id>`.
-
-On Bahama Cloud, choose one supported framework before coding.
-
-- `vite-hono`: Vite frontend plus Workers-compatible Hono backend on `/api/*`. Default for full-stack apps, CRUD apps, database-backed apps, webhooks, AI/provider calls, and apps needing server-side secrets. Read `references/vite-hono.md`.
-- `vite-spa`: Vite frontend only. Use for browser-only React, Vue, Svelte, Preact, Solid, or vanilla Vite apps with no DB, no server-side secrets, and no backend routes. Read `references/static-deployments.md`.
-- `static-site`: Raw HTML/CSS/JS with no package install and no build step. Use for simple browser-only sites. Read `references/static-deployments.md`.
-- `static-bundle`: Already-built static assets with `index.html` at root, `dist/`, `build/`, or `public/`. Use when another tool already produced deployable output. Read `references/static-deployments.md`.
-- `hono-api`: Backend-only Hono Worker API with no frontend assets. Use for JSON APIs, webhooks, automation endpoints, and service backends. Read `references/hono-api.md`.
-
-For React on Bahama Cloud, use Vite. Do not use Next.js, Remix, Nuxt, custom Webpack, Express, Node HTTP servers, or SSR framework adapters on Bahama Cloud — those belong on providers that support them. For existing projects that don't fit any provider cleanly, assess whether they can be converted to a supported shape and discuss the conversion before rewriting.
-
-## Data Rule
-
-Bahama Cloud managed databases are available only to server-side Worker/Hono code. Browser code must call backend routes. Never ask the user for a database URL, host, password, or connection string.
-
-If adding SQL tables, migrations, seed data, or persistent CRUD behavior, read `references/database-and-sql.md` before writing code.
-
-## Secrets Rule
-
-Bahama Cloud project secrets are write-only runtime values for third-party credentials. Do not ask the user to paste raw secret values into chat. Instead, choose the exact secret name, tell the user to add it at `/dashboard/projects/:slug/secrets`, and read it only from server-side Worker/Hono code as `env.SECRET_NAME`.
-
-If adding provider keys, OAuth client secrets, webhook signing secrets, or local testing with secrets, read `references/secrets.md`.
-
-## Local Testing Rule
-
-Bahama Cloud local testing can use live managed resources through dev tokens and `bahama-runtime/server`. Dev tokens and secret values are server-side local configuration only.
-
-If setting up local Hono development, local database access, Vite API proxying, or `.env.local`, read `references/local-development.md`.
-
-## Deployment Workflow
-
-Use this order:
-
-1. Confirm the CLI is installed and healthy (`bahama doctor --json`).
-2. Run the provider choice workflow: inspect, providers, choose with the user, write `bahama.yaml`.
-3. On Bahama Cloud, choose the framework and read the matching reference file.
-4. Declare a database in `resources` only if the app needs persistence.
-5. Add secrets through the dashboard path when server-side credentials are needed.
-6. Build or adjust the app to the selected contract.
-7. Run `bahama plan --json`; present consequential resource and binding steps and apply them. This prepares local development without deploying.
-8. Develop and test locally with the project's normal dev command.
-9. When publication is requested, run `bahama deploy <environment> --json`; the CLI owns packaging, upload, and status polling.
-
-Read `references/packaging-and-deploy.md` before deploying or troubleshooting deploy failures.
-
-## General Build Rules
-
-- Keep generated apps within the selected provider and framework contract.
-- Keep frontend code separate from server-only resource access.
-- Use relative frontend API paths like `/api/notes` for Bahama Cloud backend routes.
-- Do not expose databases, dev tokens, project secrets, provider keys, or credentials to browser code.
-- Do not add provider-specific deployment config to the app unless the selected provider calls for it.
-- Do not rely on unsupported backend formats or long-running Node server processes on Bahama Cloud.
-- Prefer this skill's contract and the selected reference file over stale local assumptions.
-
-## Reference Files
-
-- `references/vite-hono.md`: Read for Vite frontend plus Hono backend apps.
-- `references/static-deployments.md`: Read for `static-site`, `static-bundle`, and `vite-spa`.
-- `references/hono-api.md`: Read for backend-only Hono API deployments.
-- `references/database-and-sql.md`: Read before adding SQL, migrations, seed data, or persistent CRUD.
-- `references/secrets.md`: Read before using server-side provider credentials or local secret values.
-- `references/local-development.md`: Read before using dev tokens, `bahama-runtime`, `.env.local`, or local Hono/Vite API proxying.
-- `references/packaging-and-deploy.md`: Read before deploying or troubleshooting deploy failures.
+- [provider-selection.md](references/provider-selection.md) — choose, add, or replace a provider.
+- [workflow.md](references/workflow.md) — start a stack, add infrastructure later, work locally, or deploy updates.
+- [manifest.md](references/manifest.md) — create or change `bahama.yaml` and its bindings.
+- [recovery.md](references/recovery.md) — handle failures, drift, missing resources, stale plans, repository mismatch, or detach.
+- [bahama-cloud.md](references/bahama-cloud.md) — authenticate and use Bahama Cloud resources.
+- [bahama-cloud-deployment.md](references/bahama-cloud-deployment.md) — build, package, or deploy a Bahama Cloud application.
+- [bahama-runtime.md](references/bahama-runtime.md) — use a Bahama Cloud database from local server code.
+- [vercel.md](references/vercel.md) — use Vercel for application hosting.
+- [neon.md](references/neon.md) — use Neon Postgres or checked-in SQL migrations.
+- [local.md](references/local.md) — write resource values into a protected local env file.

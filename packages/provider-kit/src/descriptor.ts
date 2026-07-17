@@ -14,10 +14,9 @@ export interface TestedToolVersion {
 }
 
 /**
- * Everything the MODEL needs to choose this provider. The prose fields are
- * product behavior, not documentation garnish: `bahama providers` composes
- * them into the agent-facing selection guide, so they must stay accurate
- * next to the code they describe.
+ * Everything the MODEL needs to choose this provider. Targeted `bahama
+ * providers` output exposes them as agent-facing selection guidance,
+ * so they must stay accurate next to the code they describe.
  */
 export interface ProviderDescriptor {
   /** Stable id used in manifests, e.g. `vercel`. */

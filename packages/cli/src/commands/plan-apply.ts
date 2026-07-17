@@ -5,14 +5,14 @@ import { buildEngine, buildRegistry, emit, envelope, type EmitOptions } from "..
 
 export async function runPlan(projectRoot: string, emitOptions: EmitOptions): Promise<never> {
   const compiled = await compileAndDescribe(projectRoot, "plan", { kind: "reconcile" });
-  // `plan` always stops for review — even an all-routine plan is worth a look
-  // when someone asked for the plan explicitly. `deploy` is the fast path.
+  // `plan` always stops after displaying the plan. An all-routine plan is a
+  // successful result and can be applied without approval; `deploy` remains
+  // the only command that auto-applies routine work.
   if (compiled.plan && compiled.allRoutine) {
     emit(
       {
         ...compiled.envelope,
-        status: "approval_required",
-        message: `Plan ${compiled.plan.planId} contains only routine reconciliation steps and no code deployment. Apply it with \`bahama apply ${compiled.plan.planId}\`.`,
+        message: `Plan ${compiled.plan.planId} contains only routine reconciliation steps and no code deployment.`,
       },
       emitOptions,
     );

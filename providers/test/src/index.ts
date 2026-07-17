@@ -362,10 +362,19 @@ export const testProvider = defineProvider({
                 },
               ]
             : [];
+        const health = !live
+          ? locked
+            ? { state: "unhealthy" as const, reason: "Locked resource no longer exists." }
+            : { state: "not_ready" as const, reason: "Resource has not been provisioned." }
+          : drift.length > 0
+            ? { state: "unhealthy" as const, reason: "Live identity does not match the lock." }
+            : live.kind === "database" || live.deployments > 0
+              ? { state: "ready" as const }
+              : { state: "not_ready" as const, reason: "Application has not been deployed." };
         return {
           resourceKey: intent.resourceKey,
           exists: Boolean(live),
-          healthy: live ? live.deployments > 0 || live.kind === "database" : false,
+          health,
           ...(live ? { detail: live.id } : {}),
           drift,
         };
