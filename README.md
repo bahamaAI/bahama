@@ -158,6 +158,9 @@ Steps for contributing:
 3. If agent-facing behavior changes, update the provider descriptions and `skills/bahama` too.
 4. Run `npm run build && npm test && npm run typecheck && npm run lint` before opening a pull request.
 
+Adding a provider is a cross-cutting change. Follow the canonical
+[`docs/ADDING_A_PROVIDER.md`](docs/ADDING_A_PROVIDER.md) playbook.
+
 GitHub CI repeats those checks from a clean install on every pull request and
 push to `main`, then previews the two public npm packages. Publishing is separate and occurs only from an intentional GitHub Release.
 

@@ -148,6 +148,12 @@ Do not silently select an account because the provider CLI happens to have a def
 
 Provider-kit development takes place in the [Bahama monorepo](https://github.com/bahamaAI/bahama). Read the root `AGENTS.md` and `packages/provider-kit/AGENTS.md` before changing the contract.
 
+For a new provider or a material capability expansion, follow the canonical
+[Adding a Provider to Bahama](../../docs/ADDING_A_PROVIDER.md) playbook before
+implementation. It covers official-doc research, human scope decisions,
+authentication and capability gates, the complete test matrix, skill/docs
+updates, registry integration, and release verification.
+
 ```bash
 npm install
 npm run build -w @bahama/provider-kit

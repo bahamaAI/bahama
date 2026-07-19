@@ -2,6 +2,8 @@
 
 These instructions apply to every provider in this directory in addition to the repository-root `AGENTS.md`. Each provider is a separate source and test boundary bundled into the published CLI, not an independently installed package.
 
+For a new provider or a material capability expansion, follow the complete ordered process in `../docs/ADDING_A_PROVIDER.md`. It is the canonical checklist for research, human scope decisions, contract fit, authentication, implementation, tests, skill/docs updates, registry integration, and release verification.
+
 ## Provider contract
 
 - Providers import only `@bahama/provider-kit`, never core, CLI, another provider, or unrestricted process APIs.

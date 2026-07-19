@@ -5,3 +5,5 @@ dist/
 
 # Bahama local operational state (never commit)
 .bahama/
+
+.claude

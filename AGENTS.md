@@ -22,6 +22,7 @@ This public repository must work without private sibling repositories. The Baham
 - `providers/local` — protected local environment-file bindings.
 - `providers/test` — deterministic contract-test provider; enabled only by `BAHAMA_ENABLE_TEST=1`.
 - `skills/bahama` — operating guide for user-facing coding agents; its prose is product behavior.
+- `docs/ADDING_A_PROVIDER.md` — canonical end-to-end process for researching, scoping, implementing, testing, documenting, and releasing a provider.
 
 ## Architecture rules
 
@@ -77,6 +78,7 @@ The npm surface is intentionally small: `bahama` and `bahama-runtime`. Internal 
 - Provider changes keep tests, descriptor prose, capabilities, and the skill synchronized.
 - CLI workflow changes cover both JSON envelopes and human rendering, and update the skill when agent behavior changes.
 - New frameworks and capabilities must work end to end: validation, planning, execution, verification, tests, provider prose, and skill guidance.
+- New or materially expanded providers must follow `docs/ADDING_A_PROVIDER.md` and keep the public provider-authoring page synchronized.
 - Do not edit generated `dist/`; builds recreate it and Git ignores it.
 
 ## Verification
