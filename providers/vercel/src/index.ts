@@ -168,20 +168,58 @@ function parseTeamsApi(body: JsonObject): ProviderAccount[] {
   return accounts;
 }
 
-/** Extracts the deployment URL: the last stdout (then stderr) line carrying https://. */
+function normalizeDeploymentUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value === "") return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:" || !parsed.hostname.endsWith(".vercel.app")) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Legacy fallback for Vercel CLI versions that print human-readable deploy output. */
 export function parseDeploymentUrl(stdout: string, stderr: string): string | null {
   for (const channel of [stdout, stderr]) {
-    const lines = channel
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.includes("https://"));
-    const last = lines[lines.length - 1];
-    if (last) {
-      const match = /https:\/\/[^\s"')]+/.exec(last);
-      if (match) return match[0];
+    const matches = channel.matchAll(/https:\/\/[^\s"')]+/g);
+    const candidates = [...matches].map((match) => match[0]).reverse();
+    for (const candidate of candidates) {
+      const url = normalizeDeploymentUrl(candidate);
+      if (url) return url;
     }
   }
   return null;
+}
+
+export interface ParsedDeploymentResult {
+  id: string | null;
+  url: string;
+  readyState: string | null;
+}
+
+/** Parses Vercel's agent/JSON deploy result, with a guarded fallback for older CLI output. */
+export function parseDeploymentResult(stdout: string, stderr: string): ParsedDeploymentResult | null {
+  const parsed = parseJson(stdout);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const root = parsed as JsonObject;
+    const nested = root["deployment"];
+    const deployment =
+      nested && typeof nested === "object" && !Array.isArray(nested) ? (nested as JsonObject) : root;
+    const url = normalizeDeploymentUrl(deployment["url"]);
+    if (url) {
+      const id = deployment["id"];
+      const readyState = deployment["readyState"];
+      return {
+        id: typeof id === "string" && id !== "" ? id : null,
+        url,
+        readyState: typeof readyState === "string" && readyState !== "" ? readyState : null,
+      };
+    }
+  }
+
+  const url = parseDeploymentUrl(stdout, stderr);
+  return url ? { id: null, url, readyState: null } : null;
 }
 
 /* -------------------------------- vercel api ------------------------------ */
@@ -505,7 +543,7 @@ async function deploy(ctx: ProviderContext, step: PlannedStep): Promise<StepOutc
     return fail(target.kind === "error" ? target.message : `Vercel project \`${name}\` was not found.`);
   }
 
-  const res = await ctx.run.run(BIN, ["deploy", "--prod", "--yes", ...scopeArgs(scope)], {
+  const res = await ctx.run.run(BIN, ["deploy", "--prod", "--yes", "--format=json", ...scopeArgs(scope)], {
     cwd: ctx.projectRoot,
     env: projectEnv(target.project),
     timeoutMs: DEPLOY_TIMEOUT_MS,
@@ -513,21 +551,26 @@ async function deploy(ctx: ProviderContext, step: PlannedStep): Promise<StepOutc
   if (res.exitCode !== 0) {
     return fail(`vercel deploy failed: ${errText(res.stderr, res.stdout)}`);
   }
-  const url = parseDeploymentUrl(res.stdout, res.stderr);
-  if (!url) return fail("vercel deploy succeeded but printed no deployment URL.");
-  const host = url.replace(/^https?:\/\//, "");
+  const deployment = parseDeploymentResult(res.stdout, res.stderr);
+  if (!deployment) return fail("vercel deploy succeeded but returned no usable deployment identity.");
+  const host = new URL(deployment.url).hostname;
+  const pollTarget = deployment.id ?? host;
 
   // Poll the deployment until READY/ERROR; exit codes are not verification.
   const deadline = Date.now() + POLL_TIMEOUT_MS;
-  let state = "";
-  let deploymentId: string | null = null;
+  let state = deployment.readyState?.toUpperCase() ?? "";
+  let deploymentId: string | null = deployment.id;
+  let sawNotFound = false;
   for (;;) {
     if (ctx.signal.aborted) {
-      return fail(`Deploy ${host} was cancelled while ${state || "pending"}.`, "Re-run bahama apply.");
+      return fail(
+        `Deploy ${deploymentId ?? host} was cancelled while ${state || "pending"}.`,
+        "Run `bahama status --json` before deciding whether another deployment is needed.",
+      );
     }
-    const polled = await vapi(ctx, `/v13/deployments/${host}`, scope);
+    const polled = await vapi(ctx, `/v13/deployments/${encodeURIComponent(pollTarget)}`, scope);
     if (polled.kind === "ok") {
-      state = String(polled.json["readyState"] ?? polled.json["status"] ?? "");
+      state = String(polled.json["readyState"] ?? polled.json["status"] ?? "").toUpperCase();
       const id = polled.json["id"];
       deploymentId = typeof id === "string" ? id : deploymentId;
       // Postcondition includes WHICH project got deployed, not just readiness.
@@ -541,13 +584,16 @@ async function deploy(ctx: ProviderContext, step: PlannedStep): Promise<StepOutc
       if (state === "ERROR" || state === "CANCELED") {
         return fail(`Deployment ${deploymentId ?? host} ended in state ${state}.`);
       }
+    } else if (polled.kind === "not-found") {
+      sawNotFound = true;
     } else if (polled.kind === "error") {
       return fail(polled.message);
     }
     if (Date.now() >= deadline) {
       return fail(
-        `Deployment did not reach READY within ${POLL_TIMEOUT_MS / 1000}s (last state: ${state || "unknown"}).`,
-        "Re-run bahama apply to poll again; the deployment may still finish.",
+        `Deployment ${deploymentId ?? pollTarget} did not reach READY within ${POLL_TIMEOUT_MS / 1000}s ` +
+          `(last state: ${state || (sawNotFound ? "not found by Vercel API" : "unknown")}).`,
+        "Run `bahama status --json` before retrying. If production is ready, do not re-run this apply because it would create another deployment.",
       );
     }
     await sleep(POLL_INTERVAL_MS, ctx.signal);

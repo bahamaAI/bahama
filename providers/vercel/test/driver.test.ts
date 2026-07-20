@@ -17,7 +17,12 @@ import type {
   SecretBroker,
   SecretRef,
 } from "@bahama/provider-kit";
-import { parseDeploymentUrl, parseTeamsList, vercelProvider } from "../src/index.js";
+import {
+  parseDeploymentResult,
+  parseDeploymentUrl,
+  parseTeamsList,
+  vercelProvider,
+} from "../src/index.js";
 
 const SECRET_URL = "postgres://user:sekret@ep-cool-1.aws.neon.tech/neondb?sslmode=require";
 
@@ -292,6 +297,30 @@ describe("teams and URL parsing", () => {
       "https://my-app-xyz.vercel.app",
     );
     expect(parseDeploymentUrl("no url here", "")).toBeNull();
+  });
+
+  it("ignores inspector and documentation URLs in legacy deploy output", () => {
+    expect(parseDeploymentUrl("Inspect: https://vercel.com/acme/my-app/dpl_abc", "")).toBeNull();
+    expect(parseDeploymentUrl("", "Learn more: https://vercel.com/docs/deployments")).toBeNull();
+  });
+
+  it("parses the structured Vercel CLI 55 agent result", () => {
+    const stdout = JSON.stringify({
+      status: "ok",
+      deployment: {
+        id: "dpl_abc",
+        url: "https://my-app-abc123.vercel.app",
+        inspectorUrl: "https://vercel.com/acme/my-app/dpl_abc",
+        readyState: "READY",
+        deploymentApiUrl: "https://api.vercel.com/v13/deployments/dpl_abc",
+      },
+      message: "Deployment my-app-abc123.vercel.app ready.",
+    });
+    expect(parseDeploymentResult(stdout, "")).toEqual({
+      id: "dpl_abc",
+      url: "https://my-app-abc123.vercel.app",
+      readyState: "READY",
+    });
   });
 });
 
@@ -652,15 +681,24 @@ describe("execute vercel.deploy", () => {
           line(args) === "api /v9/projects/my-app" ||
           line(args) === "api /v9/projects/prj_123"
         ) return { stdout: PROJECT_JSON };
-        if (line(args) === "deploy --prod --yes") {
+        if (line(args) === "deploy --prod --yes --format=json") {
           expect(options?.cwd).toBe(root);
           // The deploy itself is pinned to the planned project via env.
           expect(options?.env).toEqual({ VERCEL_PROJECT_ID: "prj_123", VERCEL_ORG_ID: "team_acme" });
           return {
-            stdout: "Inspect: https://vercel.com/acme/my-app/dpl_abc\nhttps://my-app-abc123.vercel.app\n",
+            stdout: JSON.stringify({
+              status: "ok",
+              deployment: {
+                id: "dpl_abc",
+                url: "https://my-app-abc123.vercel.app",
+                inspectorUrl: "https://vercel.com/acme/my-app/dpl_abc",
+                readyState: "BUILDING",
+                deploymentApiUrl: "https://api.vercel.com/v13/deployments/dpl_abc",
+              },
+            }),
           };
         }
-        if (line(args) === "api /v13/deployments/my-app-abc123.vercel.app") {
+        if (line(args) === "api /v13/deployments/dpl_abc") {
           polls += 1;
           return {
             stdout: JSON.stringify({
@@ -694,7 +732,7 @@ describe("execute vercel.deploy", () => {
     const root = await scratchDir();
     const { ctx } = makeCtx(root, (cmd, args) => {
       if (line(args) === "api /v9/projects/my-app") return { stdout: PROJECT_JSON };
-      if (line(args) === "deploy --prod --yes") return { stdout: "https://my-app-err.vercel.app\n" };
+      if (line(args) === "deploy --prod --yes --format=json") return { stdout: "https://my-app-err.vercel.app\n" };
       if (line(args) === "api /v13/deployments/my-app-err.vercel.app")
         return { stdout: JSON.stringify({ id: "dpl_err", readyState: "ERROR" }) };
       return undefined;
@@ -710,7 +748,7 @@ describe("execute vercel.deploy", () => {
     const root = await scratchDir();
     const { ctx } = makeCtx(root, (cmd, args) => {
       if (line(args) === "api /v9/projects/my-app") return { stdout: PROJECT_JSON };
-      if (line(args) === "deploy --prod --yes") return { stdout: "https://my-app-other.vercel.app\n" };
+      if (line(args) === "deploy --prod --yes --format=json") return { stdout: "https://my-app-other.vercel.app\n" };
       if (line(args) === "api /v13/deployments/my-app-other.vercel.app")
         return { stdout: JSON.stringify({ id: "dpl_x", projectId: "prj_OTHER", readyState: "READY" }) };
       return undefined;
@@ -728,7 +766,7 @@ describe("execute vercel.deploy", () => {
       root,
       (cmd, args) => {
         if (line(args) === "api /v9/projects/prj_123") return { stdout: PROJECT_JSON };
-        if (line(args) === "deploy --prod --yes") return { stdout: "https://my-app-abc.vercel.app\n" };
+        if (line(args) === "deploy --prod --yes --format=json") return { stdout: "https://my-app-abc.vercel.app\n" };
         if (line(args) === "api /v13/deployments/my-app-abc.vercel.app")
           return { stdout: JSON.stringify({ id: "dpl_abc", projectId: "prj_123", readyState: "READY" }) };
         return undefined;

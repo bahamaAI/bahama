@@ -53,6 +53,19 @@ describe("bahama CLI golden path (test provider)", () => {
     expect(result.stdout).toBe(packageVersion.version);
   });
 
+  it("reports the same package version from setup", async () => {
+    const packageVersion = JSON.parse(
+      await readFile(resolve(fileURLToPath(import.meta.url), "../../package.json"), "utf8"),
+    ) as { version: string };
+    const result = await bahama(root, ["setup", "--host", "none"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.env).toMatchObject({
+      command: "setup",
+      status: "succeeded",
+      data: { cliVersion: packageVersion.version },
+    });
+  });
+
   it("init writes a valid manifest and gitignores .bahama/", async () => {
     const { exitCode, env } = await bahama(root, [
       "init",

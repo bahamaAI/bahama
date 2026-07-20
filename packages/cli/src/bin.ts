@@ -180,7 +180,7 @@ program
   .action(async (options: { json?: boolean; host: string }) => {
     const emitOpts = emitOptions(options);
     try {
-      await runSetup(options.host, emitOpts);
+      await runSetup(options.host, __BAHAMA_VERSION__, emitOpts);
     } catch (error) {
       fail("setup", emitOpts, error);
     }

@@ -137,6 +137,10 @@ Note: [`bahama-runtime`](https://www.npmjs.com/package/bahama-runtime) is an add
 | [`providers/`](providers)                        | Official provider implementations                                      |
 | [`skills/bahama`](skills/bahama)                 | The operating guide installed into a user's coding agent               |
 
+## OpenAI Build Week
+
+Bahama started during OpenAI's Build Week Hackathon, Codex helped me translate my visions for an open source, agent-first cloud orchestrator into this published alpha. Building this complex monorepo required orchestrating the CLI, core engine, providers definitions, tests, and agent skill. Codex with GPT 5.6 helped me condense a months-long build into a one-week launch.
+
 ## Contributing
 
 Bug fixes, sharper agent UX, and new provider blocks are all welcome.

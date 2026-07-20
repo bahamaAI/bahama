@@ -26,6 +26,8 @@ Read the failed step, message, and `data.recovery`. Fix the stated source or pro
 
 If the apply never finished and its approved inputs are still valid, rerun the same apply command. Bahama skips steps it already verified and safely re-derives any secret value needed by a remaining step. If the error tells you to re-plan—or if the manifest, lock, migration, or provider configuration changed—make a fresh plan instead.
 
+Deployment verification is the exception: if the provider accepted the deployment but readiness polling or the final live check failed, run `bahama status --json` before retrying. If production is already ready, do not rerun the apply; another attempt may publish a duplicate deployment.
+
 A completed apply is not cached forever. Applying the same plan later is a fresh execution.
 
 ## When a remote resource is missing

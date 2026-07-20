@@ -235,7 +235,7 @@ async function runCloudAuth(
  * chosen host needs. Deliberately conservative: it does not write into
  * editor/agent config directories it does not own.
  */
-export async function runSetup(host: string, emitOptions: EmitOptions): Promise<never> {
+export async function runSetup(host: string, cliVersion: string, emitOptions: EmitOptions): Promise<never> {
   const registry = buildRegistry();
   emit(
     envelope(
@@ -244,7 +244,7 @@ export async function runSetup(host: string, emitOptions: EmitOptions): Promise<
       `Bahama CLI is installed and executable. Host \`${host}\`: distribute the bahama skill via your agent's plugin/skill mechanism; no MCP server is required or registered.`,
       {
         host,
-        cliVersion: "0.1.0-alpha.1",
+        cliVersion,
         providers: [...registry.keys()],
       },
     ),

@@ -1,6 +1,6 @@
 {
   "name": "bahama-runtime",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "description": "Server-side runtime bridge for Bahama Cloud resources across native production and local development.",
   "homepage": "https://www.bahama.ai",
   "repository": {
