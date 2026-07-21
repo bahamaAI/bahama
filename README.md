@@ -39,7 +39,7 @@ Read https://bahama.ai/install.md and install Bahama for this workspace.
 Or install both pieces manually:
 
 ```bash
-npx -y skills add bahamaAI/bahama --skill bahama --yes
+npx -y skills add bahamaAI/bahama --skill bahama --global --yes
 ```
 
 ```bash
