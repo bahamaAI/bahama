@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { JsonObject } from "@bahama/provider-kit";
+import type { JsonObject, ProviderFailureCode } from "@bahama/provider-kit";
 import { appendLine } from "./fs-util.js";
 
 export const BAHAMA_DIR = ".bahama";
@@ -33,6 +33,7 @@ export type JournalEntry =
       /** Metadata (name + fingerprint) of produced secrets. Never values. */
       producedSecrets?: Array<{ capability: string; name: string; fingerprint: string }>;
       error?: string;
+      errorCode?: ProviderFailureCode;
     }
   | { type: "apply-end"; at: string; opId: string; planId: string; status: "succeeded" | "failed" };
 

@@ -7,6 +7,7 @@ import {
   type PlannedStep,
   type ProviderContext,
   type ProviderDriver,
+  type ProviderFailureCode,
   type SecretRef,
   type StepOutcome,
 } from "@bahama/provider-kit";
@@ -27,7 +28,13 @@ export interface ApplyDeps {
   registry: ReadonlyMap<string, ProviderDriver>;
   contextFor: (providerId: string) => ProviderContext;
   redactor: Redactor;
+  /** Optional non-secret lifecycle events for interactive progress rendering. */
+  onProgress?: (event: ApplyProgressEvent) => void;
 }
+
+export type ApplyProgressEvent =
+  | { kind: "step-started"; stepId: string; summary: string }
+  | { kind: "step-finished"; stepId: string; summary: string; status: "succeeded" | "skipped-verified" | "failed" };
 
 export interface StepSummary extends JsonObject {
   id: string;
@@ -40,7 +47,15 @@ export type ApplyOutcome =
   | { kind: "stale"; message: string }
   | { kind: "repo-mismatch"; message: string }
   | { kind: "succeeded"; opId: string; planId: string; steps: StepSummary[] }
-  | { kind: "failed"; opId: string; planId: string; stepId: string; message: string; recovery?: string };
+  | {
+      kind: "failed";
+      opId: string;
+      planId: string;
+      stepId: string;
+      code?: ProviderFailureCode;
+      message: string;
+      recovery?: string;
+    };
 
 /**
  * Execute an approved plan. Dependency order, one step at a time, verify the
@@ -139,8 +154,15 @@ export async function applyPlan(
     for (const step of plan.steps) {
       if (verified.has(step.id)) {
         summaries.push({ id: step.id, summary: step.summary, status: "skipped-verified" });
+        reportProgress(deps, {
+          kind: "step-finished",
+          stepId: step.id,
+          summary: step.summary,
+          status: "skipped-verified",
+        });
         continue;
       }
+      reportProgress(deps, { kind: "step-started", stepId: step.id, summary: step.summary });
 
       // Re-derive any missing consumed values whose producer already ran in a
       // previous process (secret values are never persisted, so this is the
@@ -158,6 +180,12 @@ export async function applyPlan(
         }
         const outcome = await executeStep(deps, plan, producer, produced, lock, opId, { rederivation: true });
         if (outcome.status !== "succeeded") {
+          reportProgress(deps, {
+            kind: "step-finished",
+            stepId: step.id,
+            summary: step.summary,
+            status: "failed",
+          });
           await appendJournal(deps.projectRoot, {
             type: "apply-end",
             at: new Date().toISOString(),
@@ -171,6 +199,12 @@ export async function applyPlan(
 
       const outcome = await executeStep(deps, plan, step, produced, lock, opId, { rederivation: false });
       if (outcome.status !== "succeeded") {
+        reportProgress(deps, {
+          kind: "step-finished",
+          stepId: step.id,
+          summary: step.summary,
+          status: "failed",
+        });
         await appendJournal(deps.projectRoot, {
           type: "apply-end",
           at: new Date().toISOString(),
@@ -181,6 +215,12 @@ export async function applyPlan(
         return failure(opId, planId, step.id, outcome);
       }
       summaries.push({ id: step.id, summary: step.summary, status: "succeeded" });
+      reportProgress(deps, {
+        kind: "step-finished",
+        stepId: step.id,
+        summary: step.summary,
+        status: "succeeded",
+      });
     }
 
     // The applied manifest is now the locked baseline.
@@ -197,6 +237,14 @@ export async function applyPlan(
     return { kind: "succeeded", opId, planId, steps: summaries };
   } finally {
     await opLock.release();
+  }
+}
+
+function reportProgress(deps: ApplyDeps, event: ApplyProgressEvent): void {
+  try {
+    deps.onProgress?.(event);
+  } catch {
+    // Progress is presentation only and must never change apply behavior.
   }
 }
 
@@ -229,6 +277,21 @@ async function executeStep(
       };
     }
     inputs.consumed[address] = value;
+  }
+
+  // Capture deploy evidence before invoking the provider. If the provider
+  // accepts an asynchronous deployment and returns its durable id, no local
+  // source scan should delay journaling that recovery identity.
+  let deployEvidence: JsonObject | null = null;
+  if (step.effects.deploys && !options.rederivation) {
+    const [configFingerprints, inspection] = await Promise.all([
+      providerConfigFingerprints(deps.projectRoot),
+      inspectProject(deps.projectRoot),
+    ]);
+    deployEvidence = {
+      configFingerprints,
+      shippedSourceFingerprint: inspection.sourceFingerprint,
+    };
   }
 
   let outcome: StepOutcome;
@@ -274,15 +337,10 @@ async function executeStep(
   if (receipt && deps.redactor.contains(canonicalJson(receipt))) {
     receipt = { redacted: "receipt withheld: it contained a sealed secret value (provider bug)" };
   }
-  if (outcome.status === "succeeded" && step.effects.deploys && !options.rederivation) {
-    const [configFingerprints, inspection] = await Promise.all([
-      providerConfigFingerprints(deps.projectRoot),
-      inspectProject(deps.projectRoot),
-    ]);
+  if (outcome.status === "succeeded" && deployEvidence) {
     receipt = {
       ...receipt,
-      configFingerprints,
-      shippedSourceFingerprint: inspection.sourceFingerprint,
+      ...deployEvidence,
     };
   }
 
@@ -304,6 +362,7 @@ async function executeStep(
       ...(Object.keys(producedValues).length > 0 ? { producedValues } : {}),
       ...(producedSecrets.length > 0 ? { producedSecrets } : {}),
       ...(outcome.error ? { error: outcome.error.message } : {}),
+      ...(outcome.error?.code ? { errorCode: outcome.error.code } : {}),
     };
     await appendJournal(deps.projectRoot, entry);
   }
@@ -347,6 +406,7 @@ function failure(opId: string, planId: string, stepId: string, outcome: StepOutc
     stepId,
     message: outcome.error?.message ?? "Step failed without an error message.",
   };
+  if (outcome.error?.code !== undefined) failed.code = outcome.error.code;
   if (outcome.error?.recovery !== undefined) failed.recovery = outcome.error.recovery;
   return failed;
 }

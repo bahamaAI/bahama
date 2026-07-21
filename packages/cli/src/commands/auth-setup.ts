@@ -54,6 +54,19 @@ export async function runAuth(
   }
 
   if (action === "status") {
+    if (probe.failure || probe.auth.state === "unknown") {
+      const code = probe.failure?.code ?? probe.auth.code ?? "unknown";
+      const reason = probe.failure?.message ?? probe.auth.reason ?? "Provider authentication could not be checked.";
+      emit(
+        envelope(
+          "auth",
+          "failed",
+          reason,
+          { provider: providerId, state: probe.auth.state, code },
+        ),
+        emitOptions,
+      );
+    }
     const authenticated = probe.auth.state === "authenticated";
     emit(
       envelope(
@@ -139,15 +152,18 @@ export async function runAuth(
   const verifiedEngine = buildEngine(process.cwd());
   const verified = await driver.probe(verifiedEngine.contextFor(providerId), { intent: [], locked: [] });
   const authenticated = verified.auth.state === "authenticated";
-  const succeeded = action === "login" ? authenticated : !authenticated;
+  const checkFailed = verified.failure !== undefined || verified.auth.state === "unknown";
+  const succeeded = action === "login" ? authenticated : verified.auth.state === "unauthenticated";
   emit(
     envelope(
       "auth",
-      succeeded ? "succeeded" : action === "login" ? "auth_required" : "failed",
+      succeeded ? "succeeded" : checkFailed ? "failed" : action === "login" ? "auth_required" : "failed",
       succeeded
         ? action === "login"
           ? `Authenticated with ${providerId} as ${verified.auth.identity ?? "unknown"}.`
           : `Logged out of ${providerId}.`
+        : checkFailed
+          ? (verified.failure?.message ?? verified.auth.reason ?? `${providerId} authentication could not be checked.`)
         : action === "login"
           ? `${providerId} login completed, but no authenticated session was detected.`
           : `${providerId} logout completed, but the session is still authenticated.`,
@@ -155,6 +171,7 @@ export async function runAuth(
         provider: providerId,
         state: verified.auth.state,
         identity: verified.auth.identity ?? null,
+        ...(checkFailed ? { code: verified.failure?.code ?? verified.auth.code ?? "unknown" } : {}),
       },
     ),
     emitOptions,

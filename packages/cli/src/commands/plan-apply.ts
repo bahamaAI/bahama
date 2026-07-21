@@ -1,6 +1,7 @@
 import type { JsonObject } from "@bahama/provider-kit";
 import { applyPlan, loadManifest } from "@bahama/core";
 import { compileAndDescribe } from "../plan-shared.js";
+import { createApplyProgressReporter } from "../progress.js";
 import { buildEngine, buildRegistry, emit, envelope, type EmitOptions } from "../runtime.js";
 
 export async function runPlan(projectRoot: string, emitOptions: EmitOptions): Promise<never> {
@@ -26,7 +27,7 @@ export async function runApply(
   options: { approved: boolean },
   emitOptions: EmitOptions,
 ): Promise<never> {
-  emit(await applyToEnvelope(projectRoot, "apply", planId, options.approved), emitOptions);
+  emit(await applyToEnvelope(projectRoot, "apply", planId, options.approved, emitOptions), emitOptions);
 }
 
 /**
@@ -55,21 +56,34 @@ export async function runDeploy(projectRoot: string, environment: string | undef
       emitOptions,
     );
   }
-  emit(await applyToEnvelope(projectRoot, "deploy", compiled.plan.planId, true), emitOptions);
+  emit(await applyToEnvelope(projectRoot, "deploy", compiled.plan.planId, true, emitOptions), emitOptions);
 }
 
-async function applyToEnvelope(projectRoot: string, command: string, planId: string, approved: boolean) {
+async function applyToEnvelope(
+  projectRoot: string,
+  command: string,
+  planId: string,
+  approved: boolean,
+  emitOptions: EmitOptions,
+) {
   const engine = buildEngine(projectRoot);
-  const outcome = await applyPlan(
-    {
-      projectRoot,
-      registry: buildRegistry(),
-      contextFor: (id) => engine.contextFor(id),
-      redactor: engine.redactor,
-    },
-    planId,
-    { approved },
-  );
+  const progress = !emitOptions.json && process.stderr.isTTY ? createApplyProgressReporter() : null;
+  let outcome: Awaited<ReturnType<typeof applyPlan>>;
+  try {
+    outcome = await applyPlan(
+      {
+        projectRoot,
+        registry: buildRegistry(),
+        contextFor: (id) => engine.contextFor(id),
+        redactor: engine.redactor,
+        ...(progress ? { onProgress: progress.onProgress } : {}),
+      },
+      planId,
+      { approved },
+    );
+  } finally {
+    progress?.finish();
+  }
 
   switch (outcome.kind) {
     case "approval_required":
@@ -87,6 +101,7 @@ async function applyToEnvelope(projectRoot: string, command: string, planId: str
         planId: outcome.planId,
         opId: outcome.opId,
         stepId: outcome.stepId,
+        ...(outcome.code ? { code: outcome.code } : {}),
         ...(outcome.recovery ? { recovery: outcome.recovery } : {}),
       });
     case "succeeded":

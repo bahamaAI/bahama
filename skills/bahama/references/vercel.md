@@ -1,6 +1,6 @@
 # Vercel
 
-Vercel is the current Bahama host for Next.js. It can also host Vite SPAs and static sites in a Vercel account owned by the user.
+Vercel is the current Bahama host for Next.js. Bahama's verified Vercel subset also includes Vite SPAs, Vite frontends with Hono APIs, standalone Hono APIs, and static sites in an account owned by the user.
 
 Bahama uses Vercel's official CLI to choose the account, create or adopt the project, transfer production environment variables, deploy local source, and verify the production URL.
 
@@ -18,6 +18,8 @@ If the result is `installation_required`, ask permission and install the officia
 npm install -g vercel
 ```
 
+Bahama requires Vercel CLI v51 or newer because resumable deployments depend on its structured deployment ID output.
+
 Then start the delegated login:
 
 ```bash
@@ -31,6 +33,32 @@ Confirm current Bahama support with:
 ```bash
 bahama providers vercel --format agent
 ```
+
+## Match the application shape
+
+Use the application's real composition in `application.framework`:
+
+| Shape         | Vercel project preset |
+| :------------ | :-------------------- |
+| `nextjs`      | `nextjs`              |
+| `vite-spa`    | `vite`                |
+| `vite-hono`   | `vite`                |
+| `hono-api`    | `hono`                |
+| `static-site` | Other                 |
+
+For `vite-hono`, the repository must already satisfy Vercel's Hono entry or function-routing conventions. Bahama does not generate provider-specific entry files or rewrite source.
+
+For `vite-hono` and `hono-api`, set `config.healthPath` on the Vercel application or environment to a public backend route that returns HTTP 2xx or 3xx, for example:
+
+```yaml
+environments:
+  production:
+    provider: vercel
+    config:
+      healthPath: /api/health
+```
+
+Do not use the SPA root as the Hono health path. Bahama requires this value so a working frontend cannot hide a missing backend. Other Vercel shapes use `/` unless `healthPath` is set explicitly.
 
 ## Choose the Vercel account
 
@@ -56,9 +84,11 @@ Bahama keeps secret values sealed until they are handed to the Vercel CLI. They 
 
 ## Deploy safely
 
-Keep `application.framework` accurate. Bahama carries it into the Vercel project, and correcting a live mismatch requires approval.
+Keep `application.framework` accurate. Bahama translates it to the compatible Vercel project preset, and correcting a live mismatch requires approval.
 
 Deployments use the project and account recorded in the plan and lock. A stray `.vercel/project.json` cannot redirect Bahama to a different project, although Bahama may warn about the mismatch.
+
+Bahama records Vercel's immutable deployment id as soon as submission is accepted. If readiness polling stops or fails, follow the returned recovery instruction and rerun the same apply; it resumes that deployment instead of publishing a duplicate. Use `bahama status --json` to inspect live state, not as a substitute for resuming the unfinished apply.
 
 Vercel-owned configuration such as `vercel.json` can add crons, rewrites, and routing. Bahama does not validate every Vercel feature; it fingerprints the file and requires approval after it changes. Check Vercel's own documentation before adding those features.
 

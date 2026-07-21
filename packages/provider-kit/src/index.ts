@@ -12,6 +12,7 @@ export {
 export { isSecretRef, type SecretRef, type SecretBroker } from "./secrets.js";
 export { formatCapabilityAddress, type CapabilitySpec, type CapabilityAddress, type BindingEdge, type AppliedBinding } from "./capabilities.js";
 export type { ProviderRole, ProviderDescriptor, TestedToolVersion } from "./descriptor.js";
+export type { ProviderFailureCode } from "./diagnostics.js";
 export type {
   StepEffects,
   ContributedStep,

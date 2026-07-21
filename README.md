@@ -116,7 +116,7 @@ bindings:
 | Provider         | ID             | What it manages                                                              |
 | :--------------- | :------------- | :--------------------------------------------------------------------------- |
 | **Bahama Cloud** | `bahama-cloud` | Managed hosting for static sites, full-stack React apps, and SQL databases   |
-| **Vercel**       | `vercel`       | Next.js, Vite, and static applications in your own Vercel account            |
+| **Vercel**       | `vercel`       | Next.js, Vite SPA, Vite + Hono, Hono API, and static applications            |
 | **Neon**         | `neon`         | Serverless Postgres in your own Neon account, plus checked-in SQL migrations |
 | **Local**        | `local`        | Protected local env-file bindings so `npm run dev` just works                |
 

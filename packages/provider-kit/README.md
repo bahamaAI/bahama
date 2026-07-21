@@ -94,6 +94,8 @@ This illustrates the contract shape, not a complete provider. Use the repository
 
 Resource health is one of `ready`, `not_ready`, `unhealthy`, or `unknown`, with a short reason whenever it is not ready. Health describes usability; drift separately describes a mismatch with committed identity or intent.
 
+Expected external failures use the shared codes `authentication`, `permission`, `network`, `not-found`, `provider-api`, `incompatible-output`, `timeout`, `cancelled`, and `unknown`. Put the code on failed step outcomes and unknown resource health. If probe cannot establish live state, return `failure: { code, message }`; never translate a failed read into `exists: false` or an authentication requirement.
+
 Provider methods never prompt. Missing tools, authentication, or account choices are returned as typed workflow data.
 If an expected provider-owned condition makes planning impossible, throw `ProviderPlanError` with an actionable message. Do not use it for programming errors; unexpected exceptions retain the CLI's internal-error path.
 
@@ -118,6 +120,8 @@ A provider contributes serializable `ContributedStep` objects. Each step include
 Providers declare what a step does—for example `createsResource`, `migratesSchema`, `transfersSecret`, `deploys`, `bindsAccount`, `changesConfiguration`, or `readOnly`. Bahama core owns routine/consequential classification. A provider cannot mark its own work safe to auto-apply.
 
 Step inputs must never contain credentials or produced secret values. A successful execution outcome must be safe to serialize into the operation journal.
+
+When a provider accepts a consequential operation before its final postcondition can be verified, split it into steps. The first step must produce a durable, non-secret operation id; later polling consumes that id. Core journals the id immediately and restores it when the same apply resumes, preventing a retry from submitting a duplicate external mutation.
 
 ## Provider context and secrets
 

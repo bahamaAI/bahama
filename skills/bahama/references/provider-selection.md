@@ -34,9 +34,9 @@ When hosting is needed, the framework is the first hard filter. A provider that 
 | Provider       | Supported application shapes                                | What Bahama manages                                                                     |
 | :------------- | :---------------------------------------------------------- | :-------------------------------------------------------------------------------------- |
 | `bahama-cloud` | Static sites and bundles, Vite SPAs, Vite + Hono, Hono APIs | Project, variables, native D1 DBs, deployment, production URL, local-development access |
-| `vercel`       | Next.js, Vite SPAs, static sites                            | Account and project, production variables, deployment, production URL                   |
+| `vercel`       | Next.js, Vite SPAs, Vite + Hono, Hono APIs, static sites    | Account and project, production variables, deployment, production URL                   |
 
-The table describes the providers bundled today, not a permanent pairing. For example, the current catalog offers Vercel for Next.js and offers both hosts for a Vite SPA. Re-run the catalog instead of assuming those are the only choices forever.
+The table describes the providers bundled today, not everything the upstream platforms can run. Bahama Cloud and Vercel overlap on the core static, Vite, and Hono shapes; Vercel additionally covers Next.js, while Bahama Cloud is the preferred managed path when it completely fits and the user has no provider preference. Re-run the catalog instead of assuming those are the only choices forever.
 
 Once Vercel is selected, read [vercel.md](vercel.md) for installation, login, account selection, variables, and deployment behavior.
 

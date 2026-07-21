@@ -26,7 +26,7 @@ Read the failed step, message, and `data.recovery`. Fix the stated source or pro
 
 If the apply never finished and its approved inputs are still valid, rerun the same apply command. Bahama skips steps it already verified and safely re-derives any secret value needed by a remaining step. If the error tells you to re-plan—or if the manifest, lock, migration, or provider configuration changed—make a fresh plan instead.
 
-Deployment verification is the exception: if the provider accepted the deployment but readiness polling or the final live check failed, run `bahama status --json` before retrying. If production is already ready, do not rerun the apply; another attempt may publish a duplicate deployment.
+For Vercel, deployment acceptance is journaled separately from readiness. If polling or the final live check fails, rerun the same apply: Bahama restores the accepted deployment id and continues watching it instead of publishing a duplicate. `bahama status --json` remains useful for an independent live-state check.
 
 A completed apply is not cached forever. Applying the same plan later is a fresh execution.
 
@@ -57,6 +57,8 @@ Bahama currently has no destroy command. If the user asks to delete infrastructu
 ## Deployment failures
 
 Use the selected host guide to understand its build and deployment contract. For Bahama Cloud, error codes distinguish packaging, dependency installation, build, publication, and readiness failures. For Vercel, verify the selected scope, framework, project identity, and provider configuration.
+
+Provider failures also carry a shared category: `authentication`, `permission`, `network`, `not-found`, `provider-api`, `incompatible-output`, `timeout`, `cancelled`, or `unknown`. Follow the reported category; do not turn network, permission, or provider-output failures into an authentication request.
 
 Read [bahama-cloud.md](bahama-cloud.md) or [vercel.md](vercel.md) for the selected host.
 

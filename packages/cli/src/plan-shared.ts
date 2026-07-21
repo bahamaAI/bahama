@@ -20,7 +20,7 @@ export async function compileAndDescribe(projectRoot: string, command: string, o
 
   if (outcome.kind === "blocked") {
     return {
-      envelope: envelope(command, outcome.status, outcome.message, {}, {
+      envelope: envelope(command, outcome.status, outcome.message, outcome.code ? { code: outcome.code } : {}, {
         requirements: outcome.requirements,
         decisions: outcome.decisions,
         warnings: outcome.warnings,

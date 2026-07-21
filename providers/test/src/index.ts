@@ -33,6 +33,19 @@ const simulateSchema = z
   .object({
     toolMissing: z.boolean().optional(),
     unauthenticated: z.boolean().optional(),
+    probeFailure: z
+      .enum([
+        "authentication",
+        "permission",
+        "network",
+        "not-found",
+        "provider-api",
+        "incompatible-output",
+        "timeout",
+        "cancelled",
+        "unknown",
+      ])
+      .optional(),
     /** More than one account forces a decision unless `account` picks one. */
     accounts: z.array(z.string()).optional(),
     /** The chosen account (a decision writeBack target). */
@@ -124,6 +137,15 @@ export const testProvider = defineProvider({
         observed: {},
       };
     }
+    if (simulate.probeFailure) {
+      return {
+        tool: { installed: true, version: "1.0.0", compatibility: "tested" },
+        auth: { state: "authenticated", identity: "test user" },
+        accounts: [],
+        observed: {},
+        failure: { code: simulate.probeFailure, message: "Injected provider probe failure." },
+      };
+    }
     const accounts = simulate.accounts ?? ["default-account"];
     const state = loadState(ctx.projectRoot);
     const observed: JsonObject = {};
@@ -206,25 +228,38 @@ export const testProvider = defineProvider({
         const envSteps = req.bindings
           .filter((b) => b.to.resourceKey === intent.resourceKey)
           .map((b) => `${intent.resourceKey}-env-${b.name.toLowerCase()}`);
-        if (operation.kind === "deploy" && operation.environment === (intent.environment ?? "production")) steps.push({
-          id: `${intent.resourceKey}-deploy`,
-          action: "test.app.deploy",
-          summary: `Deploy \`${intent.resourceKey}\` to test production`,
-          resourceKey: intent.resourceKey,
-          effects: { deploys: true },
-          dependsOn: [`${intent.resourceKey}-ensure`, ...envSteps],
-          produces: ["productionUrl"],
-          postcondition: "The deployment is live and serving.",
-        });
-        if (operation.kind === "deploy" && operation.environment === (intent.environment ?? "production")) steps.push({
-          id: `${intent.resourceKey}-verify`,
-          action: "test.app.verify",
-          summary: `Verify \`${intent.resourceKey}\` responds in production`,
-          resourceKey: intent.resourceKey,
-          effects: { readOnly: true },
-          dependsOn: [`${intent.resourceKey}-deploy`],
-          postcondition: "A production request succeeds.",
-        });
+        if (operation.kind === "deploy" && operation.environment === (intent.environment ?? "production")) {
+          steps.push({
+            id: `${intent.resourceKey}-deploy-start`,
+            action: "test.app.deploy.start",
+            summary: `Submit \`${intent.resourceKey}\` to test production`,
+            resourceKey: intent.resourceKey,
+            effects: { deploys: true },
+            dependsOn: [`${intent.resourceKey}-ensure`, ...envSteps],
+            produces: ["deploymentId"],
+            postcondition: "The test provider accepts the deployment and returns its id.",
+          });
+          steps.push({
+            id: `${intent.resourceKey}-deploy-await`,
+            action: "test.app.deploy.await",
+            summary: `Wait for \`${intent.resourceKey}\` in test production`,
+            resourceKey: intent.resourceKey,
+            effects: { readOnly: true },
+            dependsOn: [`${intent.resourceKey}-deploy-start`],
+            consumes: [formatCapabilityAddress({ resourceKey: intent.resourceKey, capability: "deploymentId" })],
+            produces: ["productionUrl"],
+            postcondition: "The accepted test deployment is live and serving.",
+          });
+          steps.push({
+            id: `${intent.resourceKey}-verify`,
+            action: "test.app.verify",
+            summary: `Verify \`${intent.resourceKey}\` responds in production`,
+            resourceKey: intent.resourceKey,
+            effects: { readOnly: true },
+            dependsOn: [`${intent.resourceKey}-deploy-await`],
+            postcondition: "A production request succeeds.",
+          });
+        }
       }
     }
 
@@ -249,7 +284,11 @@ export const testProvider = defineProvider({
       return {
         status: "failed",
         postconditionVerified: false,
-        error: { message: `Injected failure for ${step.action}`, recovery: "Re-run bahama apply to resume." },
+        error: {
+          code: "provider-api",
+          message: `Injected failure for ${step.action}`,
+          recovery: "Re-run bahama apply to resume.",
+        },
       };
     }
 
@@ -314,7 +353,7 @@ export const testProvider = defineProvider({
           receipt: { name, destination: step.inputs?.["bindingTo"] ?? null },
         };
       }
-      case "test.app.deploy": {
+      case "test.app.deploy.start": {
         const resource = state.resources[resourceKey];
         if (!resource) {
           return { status: "failed", postconditionVerified: false, error: { message: "App does not exist." } };
@@ -324,8 +363,21 @@ export const testProvider = defineProvider({
         return {
           status: "succeeded",
           postconditionVerified: true,
-          produced: { productionUrl: `https://${resource.id}.test.invalid` },
+          produced: { deploymentId: `dpl_${resource.deployments}` },
           receipt: { deployment: resource.deployments },
+        };
+      }
+      case "test.app.deploy.await": {
+        const resource = state.resources[resourceKey];
+        const deploymentId = Object.values(inputs.consumed)[0];
+        const expected = resource ? `dpl_${resource.deployments}` : null;
+        const healthy = typeof deploymentId === "string" && deploymentId === expected;
+        return {
+          status: healthy ? "succeeded" : "failed",
+          postconditionVerified: healthy,
+          ...(healthy ? { produced: { productionUrl: `https://${resource!.id}.test.invalid` } } : {}),
+          receipt: { deploymentId: typeof deploymentId === "string" ? deploymentId : null },
+          ...(healthy ? {} : { error: { message: "Accepted deployment id is unavailable or stale." } }),
         };
       }
       case "test.app.verify": {

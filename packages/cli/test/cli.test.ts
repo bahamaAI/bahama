@@ -168,7 +168,7 @@ describe("bahama CLI golden path (test provider)", () => {
     expect(exitCode).toBe(0);
     expect(env!.status).toBe("approval_required");
     const steps = env!.data["steps"] as Array<{ id: string; classificationReasons?: string[] }>;
-    const deploy = steps.find((s) => s.id === "environment.production-deploy")!;
+    const deploy = steps.find((s) => s.id === "environment.production-deploy-start")!;
     expect(deploy.classificationReasons!.join(" ")).toContain("vercel.json");
   });
 

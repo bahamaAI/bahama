@@ -3,6 +3,7 @@ import type { JsonObject, JsonValue } from "./json.js";
 import type { AppliedBinding, BindingEdge } from "./capabilities.js";
 import type { ProviderContext } from "./context.js";
 import type { ProviderDescriptor, ProviderRole } from "./descriptor.js";
+import type { ProviderFailureCode } from "./diagnostics.js";
 import type { SecretRef } from "./secrets.js";
 import type { PlanContribution, PlannedStep, StepOutcome } from "./steps.js";
 
@@ -59,7 +60,11 @@ export interface ProbeResult {
     installHint?: string;
   };
   auth: {
-    state: "authenticated" | "unauthenticated" | "expired" | "mismatch";
+    state: "authenticated" | "unauthenticated" | "expired" | "mismatch" | "unknown";
+    /** Why authentication could not be determined; never a credential. */
+    reason?: string;
+    /** Failure category when state is `unknown`. */
+    code?: ProviderFailureCode;
     /** Display identity, e.g. an email or username. Never a token. */
     identity?: string;
     /**
@@ -71,6 +76,8 @@ export interface ProbeResult {
     loginHint?: string;
   };
   accounts: ProviderAccount[];
+  /** A provider read failed, so observed absence must not be treated as fact. */
+  failure?: { code: ProviderFailureCode; message: string };
   /** Live observations relevant to the given intent/lock (existence, settings). */
   observed: JsonObject;
   warnings?: string[];
@@ -124,6 +131,8 @@ export interface ResourceHealth {
   state: ResourceHealthState;
   /** Short explanation when the state is not `ready`. */
   reason?: string;
+  /** Stable failure category for machine-readable recovery guidance. */
+  code?: ProviderFailureCode;
 }
 
 export interface ResourceStatus {

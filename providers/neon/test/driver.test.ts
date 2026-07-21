@@ -15,6 +15,7 @@ import type {
 } from "@bahama/provider-kit";
 import {
   checksumOf,
+  connectionStringForVerifiedTls,
   countApplied,
   findDestructiveStatement,
   neonProvider,
@@ -42,6 +43,20 @@ vi.mock("pg", () => ({
 }));
 
 const CONNECTION_URL = "postgres://user:sekret@ep-cool-1.aws.neon.tech/neondb?sslmode=require";
+
+describe("verified TLS connection strings", () => {
+  it("removes ambiguous node-postgres compatibility flags while preserving Neon parameters", () => {
+    const normalized = new URL(
+      connectionStringForVerifiedTls(
+        `${CONNECTION_URL}&uselibpqcompat=true&channel_binding=require`,
+      ),
+    );
+    expect(normalized.searchParams.get("sslmode")).toBeNull();
+    expect(normalized.searchParams.get("uselibpqcompat")).toBeNull();
+    expect(normalized.searchParams.get("channel_binding")).toBe("require");
+    expect(normalized.hostname).toBe("ep-cool-1.aws.neon.tech");
+  });
+});
 
 type CannedRun = { exitCode?: number; stdout?: string; stderr?: string };
 type RunHandler = (cmd: string, args: string[], options?: RunOptions) => CannedRun | undefined;
@@ -240,6 +255,21 @@ describe("probe", () => {
     expect(result.auth.loginHint).toContain("NEON_API_KEY");
   });
 
+  it("reports a network probe failure without misdiagnosing authentication", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, (cmd, args) => {
+      if (args.join(" ") === "--version") return { stdout: "2.20.0" };
+      if (args.join(" ") === "me --output json") {
+        return { exitCode: 1, stderr: "request failed: getaddrinfo ENOTFOUND console.neon.tech" };
+      }
+      return undefined;
+    });
+    const result = await neonProvider.probe(ctx, { intent: [DB_INTENT], locked: [] });
+    expect(result.auth).toMatchObject({ state: "unknown", code: "network" });
+    expect(result.failure).toMatchObject({ code: "network" });
+    expect(result.auth.loginHint).toBeUndefined();
+  });
+
   it("warns (not blocks) on a newer-than-tested CLI and observes projects by name", async () => {
     const root = await scratchDir();
     const { ctx } = makeCtx(root, (cmd, args) => {
@@ -256,6 +286,23 @@ describe("probe", () => {
     expect(result.warnings?.some((w) => w.includes("newer"))).toBe(true);
     expect(result.accounts).toEqual([{ id: "org-1", label: "Personal", kind: "org" }]);
     expect(result.observed["database"]).toEqual({ exists: true, projectId: "proj-123" });
+  });
+
+  it("does not report a project absent when project discovery fails", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, (cmd, args) => {
+      const line = args.join(" ");
+      if (line === "--version") return { stdout: "2.20.0" };
+      if (line === "me --output json") return { stdout: JSON.stringify({ id: "user-1", email: "dev@example.com" }) };
+      if (line === "orgs list --output json") return { stdout: "[]" };
+      if (line === "projects list --output json") {
+        return { exitCode: 1, stderr: "request failed: getaddrinfo ENOTFOUND console.neon.tech" };
+      }
+      return undefined;
+    });
+    const result = await neonProvider.probe(ctx, { intent: [DB_INTENT], locked: [] });
+    expect(result.failure).toMatchObject({ code: "network" });
+    expect(result.observed["database"]).toEqual({ inspection: "unavailable" });
   });
 
   it("seals the connection string and reads the migration ledger during probe", async () => {
@@ -449,6 +496,7 @@ describe("plan", () => {
     });
     expect(contribution.steps[1]).toMatchObject({
       action: "neon.migrations.apply",
+      summary: "Check 2 SQL migration(s) and apply any missing to `my-app`",
       effects: { migratesSchema: true },
       dependsOn: ["database-ensure"],
       consumes: ["resources.database.connectionUrl"],
@@ -458,9 +506,12 @@ describe("plan", () => {
           { name: "0001_init.sql", checksum: checksumOf("create table a (id int);") },
           { name: "0002_more.sql", checksum: checksumOf("create table b (id int);") },
         ],
-        pending: ["0001_init.sql", "0002_more.sql"],
+        pending: null,
       },
     });
+    expect(contribution.warnings).toEqual([
+      "Migration ledger unavailable for `database`; checked-in migrations will be checked during apply.",
+    ]);
   });
 
   it("omits the migrate step when every checked-in migration is recorded", async () => {
@@ -861,7 +912,7 @@ describe("status", () => {
     });
     expect(report.resources[0]).toMatchObject({
       exists: false,
-      health: { state: "unknown", reason: expect.stringContaining("lookup failed") },
+      health: { state: "unknown", code: "authentication", reason: expect.stringContaining("authentication expired") },
       drift: [],
     });
   });

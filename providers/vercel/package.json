@@ -2,7 +2,7 @@
   "name": "@bahama/provider-vercel",
   "version": "0.1.0-alpha.4",
   "private": true,
-  "description": "Vercel provider driver. Deploys Next.js, Vite, and static applications on the user's own Vercel account by wrapping the official vercel CLI: project ensure/adopt, sealed env transfers via stdin, production deploys, and readiness polling.",
+  "description": "Vercel provider driver. Deploys verified Next.js, Vite, Hono, and static application shapes on the user's own Vercel account by wrapping the official vercel CLI.",
   "files": ["dist", "README.md"],
   "license": "MIT",
   "type": "module",

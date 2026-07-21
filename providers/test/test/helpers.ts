@@ -7,6 +7,7 @@ import {
   applyPlan,
   compilePlan,
   savePlan,
+  type ApplyProgressEvent,
   type ApplyOutcome,
   type PlanOutcome,
 } from "@bahama/core";
@@ -69,10 +70,21 @@ export async function plan(root: string): Promise<PlanOutcome> {
   return outcome;
 }
 
-export async function apply(root: string, planId: string, approved = true): Promise<ApplyOutcome> {
+export async function apply(
+  root: string,
+  planId: string,
+  approved = true,
+  onProgress?: (event: ApplyProgressEvent) => void,
+): Promise<ApplyOutcome> {
   const eng = engine(root);
   return applyPlan(
-    { projectRoot: root, registry: REGISTRY, contextFor: (id) => eng.contextFor(id), redactor: eng.redactor },
+    {
+      projectRoot: root,
+      registry: REGISTRY,
+      contextFor: (id) => eng.contextFor(id),
+      redactor: eng.redactor,
+      ...(onProgress ? { onProgress } : {}),
+    },
     planId,
     { approved },
   );

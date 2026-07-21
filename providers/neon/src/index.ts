@@ -16,9 +16,11 @@ import {
   type ProbeResult,
   type ProviderAccount,
   type ProviderContext,
+  type ProviderFailureCode,
   ProviderPlanError,
   type ResourceIntent,
   type ResourceStatus,
+  type RunResult,
   type SecretRef,
   type StatusReport,
   type StepOutcome,
@@ -137,6 +139,11 @@ function parseProjectList(text: string): NeonProject[] {
   return projects;
 }
 
+function hasProjectListShape(text: string): boolean {
+  const parsed = parseJson(text);
+  return Array.isArray(parsed) || Array.isArray((parsed as { projects?: unknown[] } | null)?.projects);
+}
+
 function parseProject(text: string): NeonProject | null {
   const parsed = parseJson(text) as { id?: unknown; name?: unknown; project?: unknown } | null;
   if (!parsed) return null;
@@ -166,6 +173,11 @@ function parseOrgs(text: string): ProviderAccount[] {
   return accounts;
 }
 
+function hasOrgListShape(text: string): boolean {
+  const parsed = parseJson(text);
+  return Array.isArray(parsed) || Array.isArray((parsed as { organizations?: unknown[] } | null)?.organizations);
+}
+
 function parseIdentity(text: string): string {
   const parsed = parseJson(text) as { email?: unknown; name?: unknown; login?: unknown } | null;
   if (typeof parsed?.email === "string" && parsed.email !== "") return parsed.email;
@@ -178,6 +190,18 @@ function parseIdentity(text: string): string {
 function parseUserId(text: string): string | null {
   const parsed = parseJson(text) as { id?: unknown } | null;
   return typeof parsed?.id === "string" && parsed.id !== "" ? parsed.id : null;
+}
+
+/**
+ * node-postgres currently warns that sslmode=require will change semantics.
+ * Bahama already enforces certificate verification explicitly, so remove the
+ * ambiguous URL flags before parsing and keep the verified TLS option below.
+ */
+export function connectionStringForVerifiedTls(raw: string): string {
+  const parsed = new URL(raw);
+  parsed.searchParams.delete("sslmode");
+  parsed.searchParams.delete("uselibpqcompat");
+  return parsed.toString();
 }
 
 /* -------------------------------- intent helpers ------------------------- */
@@ -224,7 +248,10 @@ async function inspectMigrationLedger(
 
   try {
     const applied = await ctx.secrets.use(connection.secret, async (raw) => {
-      const client = new pg.Client({ connectionString: raw, ssl: { rejectUnauthorized: true } });
+      const client = new pg.Client({
+        connectionString: connectionStringForVerifiedTls(raw),
+        ssl: { rejectUnauthorized: true },
+      });
       await client.connect();
       try {
         const exec: QueryExecutor = (sql, params) => client.query(sql, params as unknown[]);
@@ -269,11 +296,15 @@ function ensureSummary(name: string, exists: boolean, locked: boolean): string {
   return `Verify the Neon project \`${name}\` still exists`;
 }
 
-function fail(message: string, recovery?: string): StepOutcome {
+function fail(message: string, recovery?: string, code?: ProviderFailureCode): StepOutcome {
   return {
     status: "failed",
     postconditionVerified: false,
-    error: { message, ...(recovery !== undefined ? { recovery } : {}) },
+    error: {
+      message,
+      ...(recovery !== undefined ? { recovery } : {}),
+      ...(code !== undefined ? { code } : {}),
+    },
   };
 }
 
@@ -284,6 +315,27 @@ function errText(stderr: string, stdout: string): string {
 
 function isNotFoundError(stderr: string, stdout: string): boolean {
   return /\b(404|not found|does not exist)\b/i.test(`${stderr}\n${stdout}`);
+}
+
+function diagnosticCode(text: string, timedOut = false): ProviderFailureCode {
+  if (timedOut) return "timeout";
+  if (/\b(401|unauthori[sz]ed|not authenticated|not logged in|logged out|authentication (?:expired|required|failed)|invalid[_ -]?(api[_ -]?)?key|login required|log in)\b/i.test(text)) {
+    return "authentication";
+  }
+  if (/\b(403|forbidden|permission denied|insufficient permissions?)\b/i.test(text)) return "permission";
+  if (/\b(404|not found|does not exist)\b/i.test(text)) return "not-found";
+  if (/\b(ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|network|fetch failed|socket hang up)\b/i.test(text)) {
+    return "network";
+  }
+  return "provider-api";
+}
+
+function runFailure(result: RunResult, operation: string): { code: ProviderFailureCode; message: string } {
+  const diagnostic = errText(result.stderr, result.stdout);
+  return {
+    code: diagnosticCode(`${result.stdout}\n${result.stderr}`, result.timedOut),
+    message: `${operation} failed: ${diagnostic}`,
+  };
 }
 
 /* -------------------------------- step execution ------------------------- */
@@ -307,15 +359,24 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
   if (projectId) {
     const got = await ctx.run.run(bin, ["projects", "get", projectId, "--output", "json"]);
     if (got.exitCode !== 0) {
+      const failure = runFailure(got, `Fetching locked Neon project ${projectId}`);
       return fail(
-        `The locked Neon project ${projectId} could not be fetched: ${errText(got.stderr, got.stdout)}`,
+        failure.message,
         "If the project was deleted, remove it from bahama.lock and re-plan.",
+        failure.code,
       );
+    }
+    if (!parseProject(got.stdout)) {
+      return fail("Neon project lookup returned no parsable project id.", undefined, "incompatible-output");
     }
   } else {
     const listed = await ctx.run.run(bin, ["projects", "list", ...orgArgs, "--output", "json"]);
     if (listed.exitCode !== 0) {
-      return fail(`Listing Neon projects failed: ${errText(listed.stderr, listed.stdout)}`, LOGIN_HINT);
+      const failure = runFailure(listed, "Listing Neon projects");
+      return fail(failure.message, failure.code === "authentication" ? LOGIN_HINT : undefined, failure.code);
+    }
+    if (!hasProjectListShape(listed.stdout)) {
+      return fail("Listing Neon projects returned incompatible JSON.", undefined, "incompatible-output");
     }
     projectId = parseProjectList(listed.stdout).find((p) => p.name === name)?.id ?? null;
     if (!projectId) {
@@ -339,10 +400,11 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
         },
       );
       if (created.exitCode !== 0) {
-        return fail(`Creating Neon project \`${name}\` failed: ${errText(created.stderr, created.stdout)}`);
+        const failure = runFailure(created, `Creating Neon project \`${name}\``);
+        return fail(failure.message, undefined, failure.code);
       }
       const project = parseProject(created.stdout);
-      if (!project) return fail("Neon project creation returned no parsable project id.");
+      if (!project) return fail("Neon project creation returned no parsable project id.", undefined, "incompatible-output");
       projectId = project.id;
       existed = false;
       // The runner extracts and redacts connection_uris before this driver
@@ -363,14 +425,18 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
       captureSecretStdout: { name: `${resourceKey}.connectionUrl` },
     });
     if (cs.exitCode !== 0 || !cs.secret) {
-      return fail(`Fetching the Neon connection string failed: ${errText(cs.stderr, cs.stdout)}`);
+      if (cs.exitCode !== 0) {
+        const failure = runFailure(cs, "Fetching the Neon connection string");
+        return fail(failure.message, undefined, failure.code);
+      }
+      return fail("Neon returned no connection string.", undefined, "incompatible-output");
     }
     connectionRef = cs.secret;
   }
 
   const check = await ctx.run.run(bin, ["projects", "get", projectId, "--output", "json"]);
-  const verified = check.exitCode === 0;
-  const verifiedProject = verified ? parseProject(check.stdout) : null;
+  const verifiedProject = check.exitCode === 0 ? parseProject(check.stdout) : null;
+  const verified = verifiedProject !== null;
   return {
     status: verified ? "succeeded" : "failed",
     postconditionVerified: verified,
@@ -379,7 +445,12 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
     receipt: { projectId, existed },
     ...(verified
       ? {}
-      : { error: { message: `Verifying Neon project ${projectId} failed: ${errText(check.stderr, check.stdout)}` } }),
+      : {
+          error:
+            check.exitCode === 0
+              ? { code: "incompatible-output", message: `Verifying Neon project ${projectId} returned incompatible JSON.` }
+              : runFailure(check, `Verifying Neon project ${projectId}`),
+        }),
   };
 }
 
@@ -430,9 +501,12 @@ async function applyMigrations(
   let summary: { total: number; applied: number; alreadyApplied: number; verified: boolean };
   try {
     summary = await ctx.secrets.use(ref, async (raw) => {
-      // Neon requires TLS; an explicit ssl option also covers URLs that lost
-      // their ?sslmode=require along the way.
-      const client = new pg.Client({ connectionString: raw, ssl: { rejectUnauthorized: true } });
+      // Neon requires TLS. Enforce verified TLS explicitly instead of relying
+      // on node-postgres' changing sslmode=require compatibility semantics.
+      const client = new pg.Client({
+        connectionString: connectionStringForVerifiedTls(raw),
+        ssl: { rejectUnauthorized: true },
+      });
       await client.connect();
       try {
         const exec: QueryExecutor = (sql, params) => client.query(sql, params as unknown[]);
@@ -452,9 +526,11 @@ async function applyMigrations(
       }
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     return fail(
-      `Applying migrations failed: ${(error as Error).message}`,
+      `Applying migrations failed: ${message}`,
       "Fix the failing migration and re-run bahama apply; applied migrations are recorded and will be skipped.",
+      diagnosticCode(message),
     );
   }
 
@@ -466,6 +542,7 @@ async function applyMigrations(
       ? {}
       : {
           error: {
+            code: "provider-api",
             message: "The migration ledger does not record every checked-in migration after apply.",
           },
         }),
@@ -526,18 +603,59 @@ export const neonProvider = defineProvider({
 
     const me = await ctx.run.run(bin, ["me", "--output", "json"]);
     if (me.exitCode !== 0) {
+      const failure = runFailure(me, "Checking the Neon session");
+      const authenticationFailure = failure.code === "authentication";
       return {
         tool,
-        auth: { state: "unauthenticated", loginHint: LOGIN_HINT },
+        auth: authenticationFailure
+          ? { state: "unauthenticated", loginHint: LOGIN_HINT }
+          : { state: "unknown", code: failure.code, reason: failure.message },
         accounts: [],
         observed: {},
+        ...(!authenticationFailure ? { failure } : {}),
+        ...(warnings.length > 0 ? { warnings } : {}),
+      };
+    }
+    const meDocument = parseJson(me.stdout);
+    if (!meDocument || typeof meDocument !== "object" || Array.isArray(meDocument)) {
+      return {
+        tool,
+        auth: {
+          state: "unknown",
+          code: "incompatible-output",
+          reason: "Neon session check returned incompatible JSON.",
+        },
+        accounts: [],
+        observed: {},
+        failure: { code: "incompatible-output", message: "Neon session check returned incompatible JSON." },
         ...(warnings.length > 0 ? { warnings } : {}),
       };
     }
     const identity = parseIdentity(me.stdout);
 
     const orgsRes = await ctx.run.run(bin, ["orgs", "list", "--output", "json"]);
-    const accounts = orgsRes.exitCode === 0 ? parseOrgs(orgsRes.stdout) : [];
+    if (orgsRes.exitCode !== 0) {
+      const failure = runFailure(orgsRes, "Discovering Neon organizations");
+      return {
+        tool,
+        auth: { state: "authenticated", identity },
+        accounts: [],
+        observed: {},
+        failure,
+        ...(warnings.length > 0 ? { warnings } : {}),
+      };
+    }
+    if (!hasOrgListShape(orgsRes.stdout)) {
+      return {
+        tool,
+        auth: { state: "authenticated", identity },
+        accounts: [],
+        observed: {},
+        failure: { code: "incompatible-output", message: "Neon organization discovery returned incompatible JSON." },
+        ...(warnings.length > 0 ? { warnings } : {}),
+      };
+    }
+    const accounts = parseOrgs(orgsRes.stdout);
 
     // Neon project operations require an org id in current CLIs. An explicit
     // config wins; a sole available org is deterministic and auto-selected;
@@ -563,21 +681,35 @@ export const neonProvider = defineProvider({
     }
 
     const observed: JsonObject = {};
+    let probeFailure: { code: ProviderFailureCode; message: string } | undefined;
     const migrationFiles = readMigrationFiles(ctx.projectRoot);
     for (const intent of req.intent) {
       if (intent.role !== "database") continue;
       const pinnedId = lockedProjectId(req, intent.resourceKey);
       if (pinnedId) {
         const got = await ctx.run.run(bin, ["projects", "get", pinnedId, "--output", "json"]);
-        observed[intent.resourceKey] = got.exitCode === 0
-          ? {
-              exists: true,
-              projectId: pinnedId,
-              ...(migrationFiles.length > 0
-                ? await inspectMigrationLedger(ctx, bin, pinnedId, intent.resourceKey)
-                : {}),
-            }
-          : { exists: false };
+        if (got.exitCode !== 0 && !isNotFoundError(got.stderr, got.stdout)) {
+          const failure = runFailure(got, `Fetching Neon project ${pinnedId}`);
+          observed[intent.resourceKey] = { inspection: "unavailable" };
+          probeFailure ??= failure;
+        } else if (got.exitCode === 0 && !parseProject(got.stdout)) {
+          observed[intent.resourceKey] = { inspection: "unavailable" };
+          probeFailure ??= {
+            code: "incompatible-output",
+            message: `Fetching Neon project ${pinnedId} returned incompatible JSON.`,
+          };
+        } else {
+          observed[intent.resourceKey] =
+            got.exitCode === 0
+              ? {
+                  exists: true,
+                  projectId: pinnedId,
+                  ...(migrationFiles.length > 0
+                    ? await inspectMigrationLedger(ctx, bin, pinnedId, intent.resourceKey)
+                    : {}),
+                }
+              : { exists: false };
+        }
         continue;
       }
       const name = resolveName(intent);
@@ -589,10 +721,19 @@ export const neonProvider = defineProvider({
         "--output",
         "json",
       ]);
+      if (listed.exitCode !== 0) {
+        const failure = runFailure(listed, "Listing Neon projects");
+        observed[intent.resourceKey] = { inspection: "unavailable" };
+        probeFailure ??= failure;
+        continue;
+      }
+      if (!hasProjectListShape(listed.stdout)) {
+        observed[intent.resourceKey] = { inspection: "unavailable" };
+        probeFailure ??= { code: "incompatible-output", message: "Listing Neon projects returned incompatible JSON." };
+        continue;
+      }
       const match =
-        listed.exitCode === 0 && name
-          ? (parseProjectList(listed.stdout).find((p) => p.name === name) ?? null)
-          : null;
+        name ? (parseProjectList(listed.stdout).find((p) => p.name === name) ?? null) : null;
       observed[intent.resourceKey] = match
         ? {
             exists: true,
@@ -609,6 +750,7 @@ export const neonProvider = defineProvider({
       auth: { state: "authenticated", identity, ...(account !== undefined ? { account } : {}) },
       accounts,
       observed,
+      ...(probeFailure !== undefined ? { failure: probeFailure } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     };
   },
@@ -674,16 +816,19 @@ export const neonProvider = defineProvider({
         if (error instanceof MigrationHistoryError) throw new ProviderPlanError(error.message);
         throw error;
       }
-      if (migrations.length > 0 && applied === null && exists) {
+      const ledgerCheckDeferred = migrations.length > 0 && applied === null && exists;
+      if (ledgerCheckDeferred) {
         warnings.push(
-          `Could not inspect the migration ledger for \`${intent.resourceKey}\`; the plan includes all checked-in migrations and execution will skip those already recorded.`,
+          `Migration ledger unavailable for \`${intent.resourceKey}\`; checked-in migrations will be checked during apply.`,
         );
       }
       if (pending.length > 0) {
         steps.push({
           id: `${intent.resourceKey}-migrate`,
           action: "neon.migrations.apply",
-          summary: `Apply ${pending.length} pending SQL migration(s) to \`${name}\``,
+          summary: ledgerCheckDeferred
+            ? `Check ${migrations.length} SQL migration(s) and apply any missing to \`${name}\``
+            : `Apply ${pending.length} pending SQL migration(s) to \`${name}\``,
           resourceKey: intent.resourceKey,
           effects: { migratesSchema: true },
           dependsOn: [ensureId],
@@ -692,7 +837,7 @@ export const neonProvider = defineProvider({
           // SQL, and execution rejects files that changed afterwards.
           inputs: {
             files: migrations.map((file) => ({ name: file.name, checksum: checksumOf(file.sql) })),
-            pending: pending.map((file) => file.name),
+            pending: ledgerCheckDeferred ? null : pending.map((file) => file.name),
           },
           postcondition: "All checked-in migrations are recorded as applied in _bahama_migrations.",
         });
@@ -738,22 +883,37 @@ export const neonProvider = defineProvider({
         const got = await ctx.run.run(bin, ["projects", "get", pinnedId, "--output", "json"]);
         const exists = got.exitCode === 0;
         if (!exists && !isNotFoundError(got.stderr, got.stdout)) {
+          const failure = runFailure(got, `Fetching Neon project ${pinnedId}`);
           resources.push({
             resourceKey: intent.resourceKey,
             exists: false,
-            health: { state: "unknown", reason: "Neon project lookup failed; check authentication." },
-            detail: "lookup failed",
+            health: { state: "unknown", code: failure.code, reason: failure.message },
+            detail: `lookup failed (${failure.code})`,
             drift: [],
           });
           continue;
         }
         const project = exists ? parseProject(got.stdout) : null;
+        if (exists && !project) {
+          resources.push({
+            resourceKey: intent.resourceKey,
+            exists: true,
+            health: {
+              state: "unknown",
+              code: "incompatible-output",
+              reason: `Fetching Neon project ${pinnedId} returned incompatible JSON.`,
+            },
+            detail: "lookup failed (incompatible-output)",
+            drift: [],
+          });
+          continue;
+        }
         resources.push({
           resourceKey: intent.resourceKey,
           exists,
           health: exists
             ? { state: "ready" }
-            : { state: "unhealthy", reason: "Locked Neon project no longer exists." },
+            : { state: "unhealthy", code: "not-found", reason: "Locked Neon project no longer exists." },
           ...(project?.name ? { detail: project.name } : {}),
           drift: exists
             ? []
@@ -777,11 +937,26 @@ export const neonProvider = defineProvider({
         "json",
       ]);
       if (listed.exitCode !== 0) {
+        const failure = runFailure(listed, "Listing Neon projects");
         resources.push({
           resourceKey: intent.resourceKey,
           exists: false,
-          health: { state: "unknown", reason: "Neon project lookup failed; check authentication." },
-          detail: "not authenticated",
+          health: { state: "unknown", code: failure.code, reason: failure.message },
+          detail: `lookup failed (${failure.code})`,
+          drift: [],
+        });
+        continue;
+      }
+      if (!hasProjectListShape(listed.stdout)) {
+        resources.push({
+          resourceKey: intent.resourceKey,
+          exists: false,
+          health: {
+            state: "unknown",
+            code: "incompatible-output",
+            reason: "Listing Neon projects returned incompatible JSON.",
+          },
+          detail: "lookup failed (incompatible-output)",
           drift: [],
         });
         continue;

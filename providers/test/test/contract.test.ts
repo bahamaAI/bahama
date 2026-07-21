@@ -28,8 +28,9 @@ describe("planning", () => {
     const { plan: doc } = expectPlan(await plan(root));
     const ids = doc.steps.map((s) => s.id);
     expect(ids.indexOf("database-ensure")).toBeLessThan(ids.indexOf("application-env-database_url"));
-    expect(ids.indexOf("application-env-database_url")).toBeLessThan(ids.indexOf("application-deploy"));
-    expect(ids.indexOf("application-deploy")).toBeLessThan(ids.indexOf("application-verify"));
+    expect(ids.indexOf("application-env-database_url")).toBeLessThan(ids.indexOf("application-deploy-start"));
+    expect(ids.indexOf("application-deploy-start")).toBeLessThan(ids.indexOf("application-deploy-await"));
+    expect(ids.indexOf("application-deploy-await")).toBeLessThan(ids.indexOf("application-verify"));
   });
 
   it("classifies a first-time stack as consequential", async () => {
@@ -37,7 +38,7 @@ describe("planning", () => {
     const { plan: doc } = expectPlan(await plan(root));
     const byId = new Map(doc.steps.map((s) => [s.id, s]));
     expect(byId.get("database-ensure")!.classification).toBe("consequential");
-    expect(byId.get("application-deploy")!.classification).toBe("consequential");
+    expect(byId.get("application-deploy-start")!.classification).toBe("consequential");
     expect(byId.get("application-verify")!.classification).toBe("routine");
   });
 
@@ -56,6 +57,18 @@ describe("planning", () => {
     const outcome = await plan(root);
     expect(outcome.kind).toBe("blocked");
     if (outcome.kind === "blocked") expect(outcome.status).toBe("auth_required");
+  });
+
+  it("blocks safely on a provider read failure instead of treating resources as absent", async () => {
+    const root = await makeProject({ simulate: { probeFailure: "network" } });
+    const outcome = await plan(root);
+    expect(outcome).toMatchObject({
+      kind: "blocked",
+      status: "failed",
+      code: "network",
+      requirements: [],
+      message: expect.stringContaining("network"),
+    });
   });
 
   it("returns a provider planning error as a normal failed outcome", async () => {
@@ -225,7 +238,7 @@ describe("apply and receipts", () => {
     const outcome = await apply(root, third.plan.planId, false);
     expect(outcome.kind).toBe("succeeded");
     if (outcome.kind === "succeeded") {
-      const deployStep = outcome.steps.find((step) => step.id === "application-deploy")!;
+      const deployStep = outcome.steps.find((step) => step.id === "application-deploy-start")!;
       expect(deployStep.status).toBe("succeeded");
       expect(outcome.steps.every((step) => step.status === "succeeded")).toBe(true);
     }
@@ -240,7 +253,7 @@ describe("apply and receipts", () => {
 
     await writeFile(join(root, "vercel.json"), JSON.stringify({ crons: [{ path: "/api/cron", schedule: "* * * * *" }] }));
     const second = expectPlan(await plan(root));
-    const deploy = second.plan.steps.find((s) => s.id === "application-deploy")!;
+    const deploy = second.plan.steps.find((s) => s.id === "application-deploy-start")!;
     expect(deploy.classification).toBe("consequential");
     expect(deploy.classificationReasons!.join(" ")).toContain("vercel.json");
   });
@@ -291,6 +304,58 @@ describe("apply and receipts", () => {
 });
 
 describe("failure, resume, and re-derivation", () => {
+  it("keeps progress observers presentation-only", async () => {
+    const root = await makeProject({ withDatabase: false });
+    const { plan: doc } = expectPlan(await plan(root));
+    const outcome = await apply(root, doc.planId, true, () => {
+      throw new Error("broken terminal renderer");
+    });
+    expect(outcome.kind).toBe("succeeded");
+  });
+
+  it("resumes an accepted deployment by its journaled id without submitting another deployment", async () => {
+    const root = await makeProject({
+      withDatabase: false,
+      simulate: { failOnce: ["test.app.deploy.await"] },
+    });
+    const { plan: doc } = expectPlan(await plan(root));
+
+    const firstProgress: Array<{ kind: string; stepId: string; status?: string }> = [];
+    const first = await apply(root, doc.planId, true, (event) => firstProgress.push(event));
+    expect(first).toMatchObject({
+      kind: "failed",
+      stepId: "application-deploy-await",
+      code: "provider-api",
+    });
+    expect((await testLiveState(root)).resources["application"]!.deployments).toBe(1);
+    expect(firstProgress).toContainEqual({
+      kind: "step-finished",
+      stepId: "application-deploy-await",
+      summary: "Wait for `application` in test production",
+      status: "failed",
+    });
+
+    const journal = await readFile(join(root, ".bahama", "operations.ndjson"), "utf8");
+    expect(journal).toContain('"producedValues":{"deploymentId":"dpl_1"}');
+    expect(journal).toContain('"errorCode":"provider-api"');
+
+    const secondProgress: Array<{ kind: string; stepId: string; status?: string }> = [];
+    const second = await apply(root, doc.planId, true, (event) => secondProgress.push(event));
+    expect(second.kind).toBe("succeeded");
+    if (second.kind === "succeeded") {
+      expect(second.steps).toContainEqual(
+        expect.objectContaining({ id: "application-deploy-start", status: "skipped-verified" }),
+      );
+    }
+    expect(secondProgress).toContainEqual({
+      kind: "step-finished",
+      stepId: "application-deploy-start",
+      summary: "Submit `application` to test production",
+      status: "skipped-verified",
+    });
+    expect((await testLiveState(root)).resources["application"]!.deployments).toBe(1);
+  });
+
   it("resumes after a mid-apply failure without recreating resources, re-deriving secrets in a fresh process", async () => {
     const root = await makeProject({ simulate: { failOnce: ["test.env.set"] } });
     const { plan: doc } = expectPlan(await plan(root));

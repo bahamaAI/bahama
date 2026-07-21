@@ -8,6 +8,7 @@ import {
   type ProbeResult,
   type ProviderContext,
   type ProviderDriver,
+  type ProviderFailureCode,
   type PlanOperation,
   type Requirement,
   type ResourceIntent,
@@ -44,6 +45,7 @@ export type PlanOutcome =
       kind: "blocked";
       status: "installation_required" | "auth_required" | "decision_required" | "failed";
       message: string;
+      code?: ProviderFailureCode;
       requirements: Requirement[];
       decisions: Decision[];
       warnings: string[];
@@ -115,12 +117,27 @@ export async function compilePlan(deps: PlannerDeps): Promise<PlanOutcome> {
     probes.set(providerId, probe);
     warnings.push(...(probe.warnings ?? []));
 
+    if (probe.failure) {
+      return blocked("failed", {
+        message: `${providerId} probe failed (${probe.failure.code}): ${probe.failure.message}`,
+        code: probe.failure.code,
+        warnings,
+      });
+    }
     if (!probe.tool.installed) {
       requirements.push({
         kind: "installation",
         providerId,
         tool: providerId,
         installHint: probe.tool.installHint ?? `Install the ${providerId} tool`,
+      });
+    } else if (probe.auth.state === "unknown") {
+      return blocked("failed", {
+        message:
+          probe.auth.reason ??
+          `${providerId} authentication could not be checked because the provider probe failed.`,
+        code: probe.auth.code ?? "unknown",
+        warnings,
       });
     } else if (probe.auth.state !== "authenticated") {
       requirements.push({
@@ -513,12 +530,19 @@ function compareIds(byId: Map<string, PlannedStep>) {
 
 function blocked(
   status: "installation_required" | "auth_required" | "decision_required" | "failed",
-  fields: Partial<{ message: string; requirements: Requirement[]; decisions: Decision[]; warnings: string[] }>,
+  fields: Partial<{
+    message: string;
+    code: ProviderFailureCode;
+    requirements: Requirement[];
+    decisions: Decision[];
+    warnings: string[];
+  }>,
 ): PlanOutcome {
   return {
     kind: "blocked",
     status,
     message: fields.message ?? "Planning is blocked.",
+    ...(fields.code !== undefined ? { code: fields.code } : {}),
     requirements: fields.requirements ?? [],
     decisions: fields.decisions ?? [],
     warnings: fields.warnings ?? [],

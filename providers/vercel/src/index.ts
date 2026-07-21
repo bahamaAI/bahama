@@ -16,8 +16,11 @@ import {
   type ProbeResult,
   type ProviderAccount,
   type ProviderContext,
+  type ProviderFailureCode,
+  ProviderPlanError,
   type ResourceIntent,
   type ResourceStatus,
+  type RunResult,
   type StatusReport,
   type StepOutcome,
   type ToolCompatibility,
@@ -39,8 +42,10 @@ const PROVIDER_ID = "vercel";
 const BIN = "vercel";
 const INSTALL_HINT = "npm i -g vercel";
 const LOGIN_HINT = "vercel login (or set VERCEL_TOKEN — the CLI honors it directly)";
-/** Tested against vercel CLI v39; newer majors warn, never block. */
-const TESTED_MAJOR = 39;
+const SUPPORTED_FRAMEWORKS = ["nextjs", "vite-spa", "vite-hono", "hono-api", "static-site"] as const;
+/** Structured deploy output with an immutable deployment id is verified from v51 onward. */
+const MIN_SUPPORTED_MAJOR = 51;
+const MAX_TESTED_MAJOR = 55;
 const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 5 * 60_000;
 const DEPLOY_TIMEOUT_MS = 10 * 60_000;
@@ -51,6 +56,11 @@ const intentSchema = z
     name: z.string().min(1).optional(),
     /** Team/user scope slug or id; a decision writes this back when ambiguous. */
     scope: z.string().min(1).optional(),
+    /** Public path used to verify server behavior after deployment. */
+    healthPath: z
+      .string()
+      .regex(/^\/(?![\\/])[^\\]*$/, "healthPath must be a same-origin absolute path")
+      .optional(),
   })
   .passthrough()
   .transform((value) => value as JsonObject);
@@ -66,8 +76,8 @@ function compatibilityOf(version: string | undefined): ToolCompatibility | undef
   if (!version) return undefined;
   const major = Number(version.split(".")[0]);
   if (!Number.isFinite(major)) return undefined;
-  if (major < TESTED_MAJOR) return "unsupported";
-  if (major === TESTED_MAJOR) return "tested";
+  if (major < MIN_SUPPORTED_MAJOR) return "unsupported";
+  if (major <= MAX_TESTED_MAJOR) return "tested";
   return "untested-newer";
 }
 
@@ -99,17 +109,53 @@ function inputString(step: PlannedStep, key: string): string | null {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
-function fail(message: string, recovery?: string): StepOutcome {
+function fail(message: string, recovery?: string, code?: ProviderFailureCode): StepOutcome {
   return {
     status: "failed",
     postconditionVerified: false,
-    error: { message, ...(recovery !== undefined ? { recovery } : {}) },
+    error: {
+      message,
+      ...(recovery !== undefined ? { recovery } : {}),
+      ...(code !== undefined ? { code } : {}),
+    },
   };
 }
 
 function errText(stderr: string, stdout: string): string {
   const text = (stderr.trim() || stdout.trim()).split(/\r?\n/).slice(-3).join(" ");
   return text === "" ? "(no output)" : text;
+}
+
+function diagnosticCode(text: string, timedOut = false): ProviderFailureCode {
+  if (timedOut) return "timeout";
+  if (/\b(401|unauthori[sz]ed|not authenticated|not logged in|logged out|authentication (?:expired|required|failed)|invalid[_ -]?token|login required|log in)\b/i.test(text)) {
+    return "authentication";
+  }
+  if (/\b(403|forbidden|permission denied|insufficient permissions?)\b/i.test(text)) return "permission";
+  if (/\b(404|not found|does not exist)\b/i.test(text)) return "not-found";
+  if (/\b(ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|network|fetch failed|socket hang up)\b/i.test(text)) {
+    return "network";
+  }
+  return "provider-api";
+}
+
+function runFailure(result: RunResult, operation: string): { code: ProviderFailureCode; message: string } {
+  const diagnostic = errText(result.stderr, result.stdout);
+  const code = diagnosticCode(`${result.stdout}\n${result.stderr}`, result.timedOut);
+  return { code, message: `${operation} failed: ${diagnostic}` };
+}
+
+function incompatibleCliOption(result: RunResult): boolean {
+  return /unknown|unexpected|unsupported|invalid option/i.test(`${result.stdout}\n${result.stderr}`);
+}
+
+function needsExplicitHealthPath(framework: string): boolean {
+  return framework === "vite-hono" || framework === "hono-api";
+}
+
+function verificationUrl(productionUrl: string, healthPath: string): string {
+  if (healthPath === "/") return productionUrl;
+  return new URL(healthPath, productionUrl).toString();
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -166,6 +212,10 @@ function parseTeamsApi(body: JsonObject): ProviderAccount[] {
     });
   }
   return accounts;
+}
+
+function hasTeamsApiShape(body: JsonObject): boolean {
+  return Array.isArray(body["teams"]);
 }
 
 function normalizeDeploymentUrl(value: unknown): string | null {
@@ -227,7 +277,7 @@ export function parseDeploymentResult(stdout: string, stderr: string): ParsedDep
 type ApiResult =
   | { kind: "ok"; json: JsonObject }
   | { kind: "not-found" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; code: ProviderFailureCode; message: string };
 
 /** Reads via `vercel api <endpoint>`: the CLI authenticates against the Vercel REST API and prints JSON. */
 async function vapi(ctx: ProviderContext, path: string, scope: string | null): Promise<ApiResult> {
@@ -237,9 +287,10 @@ async function vapi(ctx: ProviderContext, path: string, scope: string | null): P
     const body = parsed as JsonObject;
     const error = body["error"] as { code?: unknown; message?: unknown } | undefined;
     if (error && typeof error === "object") {
-      const code = String(error.code ?? "");
-      if (code.includes("not_found") || code === "forbidden") return { kind: "not-found" };
-      return { kind: "error", message: `Vercel API error on ${path}: ${String(error.message ?? code)}` };
+      const rawCode = String(error.code ?? "");
+      if (rawCode.toLowerCase().includes("not_found")) return { kind: "not-found" };
+      const message = `Vercel API error on ${path}: ${String(error.message ?? rawCode)}`;
+      return { kind: "error", code: diagnosticCode(`${rawCode} ${message}`), message };
     }
     return { kind: "ok", json: body };
   }
@@ -248,12 +299,16 @@ async function vapi(ctx: ProviderContext, path: string, scope: string | null): P
     // instead of the JSON error body older versions emitted. Absence is an
     // expected probe result, not a provider failure.
     const diagnostic = `${res.stdout}\n${res.stderr}`;
-    if (/\bnot found\b.*\(404\)|\b404\b.*\bnot found\b/is.test(diagnostic)) {
+    if (!res.timedOut && /\bnot found\b.*\(404\)|\b404\b.*\bnot found\b/is.test(diagnostic)) {
       return { kind: "not-found" };
     }
-    return { kind: "error", message: `vercel api ${path} failed: ${errText(res.stderr, res.stdout)}` };
+    return { kind: "error", ...runFailure(res, `vercel api ${path}`) };
   }
-  return { kind: "error", message: `vercel api ${path} returned no parsable JSON.` };
+  return {
+    kind: "error",
+    code: "incompatible-output",
+    message: `vercel api ${path} returned no parsable JSON.`,
+  };
 }
 
 async function updateProjectFramework(
@@ -273,9 +328,13 @@ async function updateProjectFramework(
   ]);
   const parsed = parseJson(res.stdout);
   if (res.exitCode !== 0 || !parsed || typeof parsed !== "object") {
+    const failure =
+      res.exitCode === 0
+        ? { code: "incompatible-output" as const, message: "Vercel returned no parsable project document." }
+        : runFailure(res, "Updating the Vercel framework preset");
     return {
       kind: "error",
-      message: `Updating the Vercel framework preset failed: ${errText(res.stderr, res.stdout)}`,
+      ...failure,
     };
   }
   return { kind: "ok", json: parsed as JsonObject };
@@ -290,15 +349,32 @@ interface VercelProject {
   framework: string | null;
 }
 
-function vercelFramework(framework: string): string | null {
+/** Maps Bahama's portable application shape to Vercel's native project preset. */
+function vercelFramework(framework: string): string | null | undefined {
   if (framework === "nextjs") return "nextjs";
-  if (framework === "vite-spa") return "vite";
-  return null;
+  if (framework === "vite-spa" || framework === "vite-hono") return "vite";
+  if (framework === "hono-api") return "hono";
+  if (framework === "static-site") return null;
+  return undefined;
 }
 
-function manifestFramework(framework: string | null): string | null {
+function frameworkMatches(framework: string, nativeFramework: string | null): boolean {
+  const expected = vercelFramework(framework);
+  if (expected === undefined) return false;
+  if (framework === "static-site") return nativeFramework === null || nativeFramework === "other";
+  return nativeFramework === expected;
+}
+
+/**
+ * Normalizes Vercel's native preset for core drift checks. Vercel's `vite`
+ * preset is compatible with both portable Vite shapes, so preserve the
+ * declared shape when it matches instead of incorrectly reporting vite-spa.
+ */
+function manifestFramework(framework: string | null, intendedFramework?: string): string | null {
+  if (intendedFramework && frameworkMatches(intendedFramework, framework)) return intendedFramework;
   if (framework === "nextjs") return "nextjs";
   if (framework === "vite") return "vite-spa";
+  if (framework === "hono") return "hono-api";
   if (framework === "other" || framework === null) return "static-site";
   return framework;
 }
@@ -320,13 +396,17 @@ async function lookupProject(
   ctx: ProviderContext,
   nameOrId: string,
   scope: string | null,
-): Promise<{ kind: "found"; project: VercelProject } | { kind: "absent" } | { kind: "error"; message: string }> {
+): Promise<
+  | { kind: "found"; project: VercelProject }
+  | { kind: "absent" }
+  | { kind: "error"; code: ProviderFailureCode; message: string }
+> {
   const res = await vapi(ctx, `/v9/projects/${encodeURIComponent(nameOrId)}`, scope);
   if (res.kind === "not-found") return { kind: "absent" };
   if (res.kind === "error") return res;
   const id = res.json["id"];
   if (typeof id !== "string" || id === "") {
-    return { kind: "error", message: "Vercel project lookup returned no id." };
+    return { kind: "error", code: "incompatible-output", message: "Vercel project lookup returned no id." };
   }
   const accountId = res.json["accountId"];
   return {
@@ -419,12 +499,13 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
   if (!framework) return fail(`Step ${step.id} is missing its framework input.`);
 
   const existing = await lookupProject(ctx, name, scope);
-  if (existing.kind === "error") return fail(existing.message, LOGIN_HINT);
+  if (existing.kind === "error") return fail(existing.message, undefined, existing.code);
   const existed = existing.kind === "found";
   if (!existed) {
     const created = await ctx.run.run(BIN, ["project", "add", name, ...scopeArgs(scope)]);
     if (created.exitCode !== 0) {
-      return fail(`Creating Vercel project \`${name}\` failed: ${errText(created.stderr, created.stdout)}`);
+      const failure = runFailure(created, `Creating Vercel project \`${name}\``);
+      return fail(failure.message, undefined, failure.code);
     }
   }
 
@@ -434,22 +515,39 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
       check.kind === "error"
         ? check.message
         : `Vercel project \`${name}\` was not found after ensure.`,
+      undefined,
+      check.kind === "error" ? check.code : "not-found",
     );
   }
   const expectedFramework = vercelFramework(framework);
-  if (manifestFramework(check.project.framework) !== framework) {
+  if (expectedFramework === undefined) {
+    return fail(
+      `Vercel does not support Bahama application framework \`${framework}\` in this CLI build.`,
+      "Run `bahama providers vercel --format agent` and choose a listed framework.",
+    );
+  }
+  if (!frameworkMatches(framework, check.project.framework)) {
     const updated = await updateProjectFramework(ctx, check.project.id, scope, expectedFramework);
     if (updated.kind !== "ok") {
       return fail(
         updated.kind === "error"
           ? updated.message
           : `Vercel project \`${name}\` disappeared while its framework preset was being updated.`,
+        undefined,
+        updated.kind === "error" ? updated.code : "not-found",
       );
     }
     const verified = await lookupProject(ctx, check.project.id, scope);
-    if (verified.kind !== "found" || manifestFramework(verified.project.framework) !== framework) {
+    if (verified.kind !== "found") {
+      return verified.kind === "error"
+        ? fail(verified.message, undefined, verified.code)
+        : fail(`Vercel project \`${name}\` disappeared after its framework preset was updated.`, undefined, "not-found");
+    }
+    if (!frameworkMatches(framework, verified.project.framework)) {
       return fail(
         `Vercel did not retain framework preset \`${expectedFramework ?? "Other"}\` for \`${name}\`.`,
+        undefined,
+        "provider-api",
       );
     }
   }
@@ -486,7 +584,9 @@ async function setEnv(
   // be pinned via VERCEL_PROJECT_ID, not left to `.vercel/project.json`.
   const target = await lookupProject(ctx, inputString(step, "projectId") ?? name, scope);
   if (target.kind !== "found") {
-    return fail(target.kind === "error" ? target.message : `Vercel project \`${name}\` was not found.`);
+    return target.kind === "error"
+      ? fail(target.message, undefined, target.code)
+      : fail(`Vercel project \`${name}\` was not found.`, undefined, "not-found");
   }
 
   const added = await ctx.run.run(
@@ -495,9 +595,11 @@ async function setEnv(
     { cwd: ctx.projectRoot, env: projectEnv(target.project), secretStdin: ref },
   );
   if (added.exitCode !== 0) {
+    const failure = runFailure(added, `vercel env add ${bindingName}`);
     return fail(
-      `vercel env add ${bindingName} failed: ${errText(added.stderr, added.stdout)}`,
+      failure.message,
       "If the installed vercel CLI does not support --yes/--force here, upgrade it (npm i -g vercel).",
+      incompatibleCliOption(added) ? "incompatible-output" : failure.code,
     );
   }
 
@@ -505,16 +607,19 @@ async function setEnv(
   // production target is what gets verified.
   const envRes = await vapi(ctx, `/v9/projects/${target.project.id}/env`, scope);
   if (envRes.kind !== "ok") {
-    return fail(envRes.kind === "error" ? envRes.message : "Listing project env vars failed.");
+    return envRes.kind === "error"
+      ? fail(envRes.message, undefined, envRes.code)
+      : fail("Listing project env vars failed because the project was not found.", undefined, "not-found");
   }
   const envs = envRes.json["envs"];
-  const present =
-    Array.isArray(envs) &&
-    envs.some((entry) => {
-      const env = entry as { key?: unknown; target?: unknown };
-      const targets = Array.isArray(env.target) ? env.target : [env.target];
-      return env.key === bindingName && targets.includes("production");
-    });
+  if (!Array.isArray(envs)) {
+    return fail("Listing Vercel project env vars returned incompatible JSON.", undefined, "incompatible-output");
+  }
+  const present = envs.some((entry) => {
+    const env = entry as { key?: unknown; target?: unknown };
+    const targets = Array.isArray(env.target) ? env.target : [env.target];
+    return env.key === bindingName && targets.includes("production");
+  });
   return {
     status: present ? "succeeded" : "failed",
     postconditionVerified: present,
@@ -523,13 +628,14 @@ async function setEnv(
       ? {}
       : {
           error: {
+            code: "provider-api",
             message: `${bindingName} is not listed for the production target after vercel env add.`,
           },
         }),
   };
 }
 
-async function deploy(ctx: ProviderContext, step: PlannedStep): Promise<StepOutcome> {
+async function startDeployment(ctx: ProviderContext, step: PlannedStep): Promise<StepOutcome> {
   const scope = inputString(step, "scope");
   const name = inputString(step, "name");
   if (!name) return fail(`Step ${step.id} is missing its project name input.`);
@@ -540,60 +646,103 @@ async function deploy(ctx: ProviderContext, step: PlannedStep): Promise<StepOutc
   // different project than the plan named.
   const target = await lookupProject(ctx, inputString(step, "projectId") ?? name, scope);
   if (target.kind !== "found") {
-    return fail(target.kind === "error" ? target.message : `Vercel project \`${name}\` was not found.`);
+    return target.kind === "error"
+      ? fail(target.message, undefined, target.code)
+      : fail(`Vercel project \`${name}\` was not found.`, undefined, "not-found");
   }
 
-  const res = await ctx.run.run(BIN, ["deploy", "--prod", "--yes", "--format=json", ...scopeArgs(scope)], {
-    cwd: ctx.projectRoot,
-    env: projectEnv(target.project),
-    timeoutMs: DEPLOY_TIMEOUT_MS,
-  });
+  // `--no-wait` returns as soon as Vercel accepts the source and assigns its
+  // immutable deployment id. This successful step is journaled before any
+  // readiness polling, which makes a later apply resume the same deployment.
+  const res = await ctx.run.run(
+    BIN,
+    ["deploy", "--prod", "--yes", "--no-wait", "--format=json", ...scopeArgs(scope)],
+    {
+      cwd: ctx.projectRoot,
+      env: projectEnv(target.project),
+      timeoutMs: DEPLOY_TIMEOUT_MS,
+    },
+  );
   if (res.exitCode !== 0) {
-    return fail(`vercel deploy failed: ${errText(res.stderr, res.stdout)}`);
+    const failure = runFailure(res, "vercel deploy");
+    return fail(failure.message, undefined, incompatibleCliOption(res) ? "incompatible-output" : failure.code);
   }
   const deployment = parseDeploymentResult(res.stdout, res.stderr);
-  if (!deployment) return fail("vercel deploy succeeded but returned no usable deployment identity.");
-  const host = new URL(deployment.url).hostname;
-  const pollTarget = deployment.id ?? host;
+  if (!deployment?.id) {
+    return fail(
+      "vercel deploy was accepted but returned no durable deployment id.",
+      "Upgrade the vercel CLI and re-run only after checking `bahama status --json` for an accepted deployment.",
+      "incompatible-output",
+    );
+  }
+  return {
+    status: "succeeded",
+    postconditionVerified: true,
+    produced: { deploymentId: deployment.id },
+    receipt: { deploymentId: deployment.id, deploymentUrl: deployment.url, state: deployment.readyState },
+  };
+}
+
+async function awaitDeployment(
+  ctx: ProviderContext,
+  step: PlannedStep,
+  inputs: ExecutionInputs,
+): Promise<StepOutcome> {
+  const scope = inputString(step, "scope");
+  const name = inputString(step, "name");
+  if (!name) return fail(`Step ${step.id} is missing its project name input.`);
+  const deploymentId = Object.values(inputs.consumed).find(
+    (value): value is string => typeof value === "string" && value !== "",
+  );
+  if (!deploymentId) {
+    return fail(`Step ${step.id} received no accepted Vercel deployment id.`, undefined, "incompatible-output");
+  }
+  const target = await lookupProject(ctx, inputString(step, "projectId") ?? name, scope);
+  if (target.kind !== "found") {
+    return target.kind === "error"
+      ? fail(target.message, undefined, target.code)
+      : fail(`Vercel project \`${name}\` was not found.`, undefined, "not-found");
+  }
 
   // Poll the deployment until READY/ERROR; exit codes are not verification.
   const deadline = Date.now() + POLL_TIMEOUT_MS;
-  let state = deployment.readyState?.toUpperCase() ?? "";
-  let deploymentId: string | null = deployment.id;
+  let state = "";
   let sawNotFound = false;
   for (;;) {
     if (ctx.signal.aborted) {
       return fail(
-        `Deploy ${deploymentId ?? host} was cancelled while ${state || "pending"}.`,
-        "Run `bahama status --json` before deciding whether another deployment is needed.",
+        `Deploy ${deploymentId} was cancelled while ${state || "pending"}.`,
+        "Re-run this apply to continue watching the accepted deployment; Bahama will not create another one.",
+        "cancelled",
       );
     }
-    const polled = await vapi(ctx, `/v13/deployments/${encodeURIComponent(pollTarget)}`, scope);
+    const polled = await vapi(ctx, `/v13/deployments/${encodeURIComponent(deploymentId)}`, scope);
     if (polled.kind === "ok") {
       state = String(polled.json["readyState"] ?? polled.json["status"] ?? "").toUpperCase();
-      const id = polled.json["id"];
-      deploymentId = typeof id === "string" ? id : deploymentId;
       // Postcondition includes WHICH project got deployed, not just readiness.
       const polledProject = polled.json["projectId"];
       if (typeof polledProject === "string" && polledProject !== "" && polledProject !== target.project.id) {
         return fail(
-          `Deployment ${host} belongs to Vercel project ${polledProject}, not the planned ${target.project.id}.`,
+          `Deployment ${deploymentId} belongs to Vercel project ${polledProject}, not the planned ${target.project.id}.`,
+          undefined,
+          "permission",
         );
       }
       if (state === "READY") break;
       if (state === "ERROR" || state === "CANCELED") {
-        return fail(`Deployment ${deploymentId ?? host} ended in state ${state}.`);
+        return fail(`Deployment ${deploymentId} ended in state ${state}.`, undefined, "provider-api");
       }
     } else if (polled.kind === "not-found") {
       sawNotFound = true;
     } else if (polled.kind === "error") {
-      return fail(polled.message);
+      return fail(polled.message, undefined, polled.code);
     }
     if (Date.now() >= deadline) {
       return fail(
-        `Deployment ${deploymentId ?? pollTarget} did not reach READY within ${POLL_TIMEOUT_MS / 1000}s ` +
+        `Deployment ${deploymentId} did not reach READY within ${POLL_TIMEOUT_MS / 1000}s ` +
           `(last state: ${state || (sawNotFound ? "not found by Vercel API" : "unknown")}).`,
-        "Run `bahama status --json` before retrying. If production is ready, do not re-run this apply because it would create another deployment.",
+        "Re-run this apply to continue watching the accepted deployment; Bahama will not create another one.",
+        "timeout",
       );
     }
     await sleep(POLL_INTERVAL_MS, ctx.signal);
@@ -603,24 +752,20 @@ async function deploy(ctx: ProviderContext, step: PlannedStep): Promise<StepOutc
   // The latter can redirect to Vercel SSO and falsely look healthy while the
   // public production alias still returns NOT_FOUND.
   const projectDetail = await vapi(ctx, `/v9/projects/${target.project.id}`, scope);
+  if (projectDetail.kind === "error") return fail(projectDetail.message, undefined, projectDetail.code);
   const productionUrl = projectDetail.kind === "ok" ? productionUrlOf(projectDetail.json) : null;
   if (!productionUrl) {
-    return fail("Vercel reported READY but no production alias was assigned to the planned project.");
+    return fail(
+      "Vercel reported READY but no production alias was assigned to the planned project.",
+      undefined,
+      projectDetail.kind === "not-found" ? "not-found" : "provider-api",
+    );
   }
-  const live = await ctx.http.request({ method: "GET", url: productionUrl });
-  const verified = live.status >= 200 && live.status < 400;
   return {
-    status: verified ? "succeeded" : "failed",
-    postconditionVerified: verified,
+    status: "succeeded",
+    postconditionVerified: true,
     produced: { productionUrl },
-    receipt: {
-      deploymentId,
-      state,
-      httpStatus: live.status,
-    },
-    ...(verified
-      ? {}
-      : { error: { message: `Production URL responded HTTP ${live.status} after deploy.` } }),
+    receipt: { deploymentId, state, productionUrl },
   };
 }
 
@@ -642,17 +787,39 @@ async function verify(
     }
   }
   if (!url) {
-    return fail("No production URL is recorded for this application.", "Deploy the application first.");
+    return fail("No production URL is recorded for this application.", "Deploy the application first.", "not-found");
   }
-  const live = await ctx.http.request({ method: "GET", url });
+  const framework = inputString(step, "framework");
+  const configuredHealthPath = inputString(step, "healthPath");
+  if (framework && needsExplicitHealthPath(framework) && !configuredHealthPath) {
+    return fail(
+      `Step ${step.id} has no healthPath for the ${framework} backend.`,
+      "Re-plan after setting the Vercel provider config.healthPath to a public backend route.",
+      "incompatible-output",
+    );
+  }
+  const healthPath = configuredHealthPath ?? "/";
+  const checkUrl = verificationUrl(url, healthPath);
+  let live;
+  try {
+    live = await ctx.http.request({ method: "GET", url: checkUrl });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return fail(`Checking ${checkUrl} failed: ${message}`, undefined, diagnosticCode(message));
+  }
   const verified = live.status >= 200 && live.status < 400;
   return {
     status: verified ? "succeeded" : "failed",
     postconditionVerified: verified,
-    receipt: { httpStatus: live.status },
+    receipt: { healthPath, httpStatus: live.status },
     ...(verified
       ? {}
-      : { error: { message: `Production URL responded HTTP ${live.status}.` } }),
+      : {
+          error: {
+            code: live.status === 404 ? "not-found" : "provider-api",
+            message: `Production health URL ${checkUrl} responded HTTP ${live.status}.`,
+          },
+        }),
   };
 }
 
@@ -669,13 +836,17 @@ export const vercelProvider = defineProvider({
     name: "Vercel",
     roles: ["environment", "application"],
     description:
-      "Deploys applications on the user's own Vercel account through the official vercel CLI: project ensure/adopt, sealed production env transfers, prod deploys with readiness polling.",
+      "Deploys verified Next.js, Vite SPA, Vite + Hono, Hono API, and static-site shapes on the user's own Vercel account through the official vercel CLI: project ensure/adopt, sealed production env transfers, prod deploys with readiness polling.",
     useWhen:
-      "The application uses a supported framework and should run on the user's own Vercel account, with any declared server-side variables transferred during deployment.",
+      "The application uses one of the listed shapes and should run on the user's own Vercel account, with any declared server-side variables transferred during deployment.",
     avoidWhen:
-      "The application uses an unsupported runtime or the user wants a different host or account boundary.",
-    requirements: ["Vercel account (https://vercel.com)", `vercel CLI (${INSTALL_HINT})`],
-    frameworks: ["nextjs", "vite-spa", "static-site"],
+      "The application falls outside Bahama's verified Vercel subset, needs source rewriting, or the user wants the first-party managed Bahama Cloud path.",
+    requirements: [
+      "Vercel account (https://vercel.com)",
+      `vercel CLI v${MIN_SUPPORTED_MAJOR}+ (${INSTALL_HINT})`,
+      "Vite + Hono and Hono API: public config.healthPath",
+    ],
+    frameworks: [...SUPPORTED_FRAMEWORKS],
     produces: [
       { capability: "productionUrl", secret: false, description: "Public URL of the production deployment." },
     ],
@@ -691,7 +862,7 @@ export const vercelProvider = defineProvider({
         description: "Legacy spelling for production environment variables",
       },
     ],
-    testedVersions: [{ tool: "vercel", range: ">=39" }],
+    testedVersions: [{ tool: "vercel", range: ">=51 <56" }],
   },
 
   intentSchema,
@@ -716,17 +887,30 @@ export const vercelProvider = defineProvider({
       ...(compatibility !== undefined ? { compatibility } : {}),
     };
     const warnings: string[] = [];
-    if (compatibility === "untested-newer") {
-      warnings.push(`vercel CLI ${version} is newer than the tested v${TESTED_MAJOR} range; proceeding anyway.`);
-    }
-
-    const whoami = await ctx.run.run(BIN, ["whoami"]);
-    if (whoami.exitCode !== 0) {
+    if (compatibility === "unsupported") {
+      const message =
+        `vercel CLI ${version ?? "unknown"} is older than the required v${MIN_SUPPORTED_MAJOR} structured-deploy contract. ` +
+        `Upgrade with ${INSTALL_HINT}.`;
       return {
         tool,
-        auth: { state: "unauthenticated", loginHint: LOGIN_HINT },
+        auth: { state: "unknown", code: "incompatible-output", reason: message },
         accounts: [],
         observed: {},
+        failure: { code: "incompatible-output", message },
+      };
+    }
+    const whoami = await ctx.run.run(BIN, ["whoami"]);
+    if (whoami.exitCode !== 0) {
+      const failure = runFailure(whoami, "Checking the Vercel session");
+      const authenticationFailure = failure.code === "authentication";
+      return {
+        tool,
+        auth: authenticationFailure
+          ? { state: "unauthenticated", loginHint: LOGIN_HINT }
+          : { state: "unknown", code: failure.code, reason: failure.message },
+        accounts: [],
+        observed: {},
+        ...(!authenticationFailure ? { failure } : {}),
         ...(warnings.length > 0 ? { warnings } : {}),
       };
     }
@@ -748,10 +932,28 @@ export const vercelProvider = defineProvider({
     // for CLI/API version skew, but personal is always a first-class choice.
     const teamsApi = await vapi(ctx, "/v2/teams?limit=100", null);
     let teamAccounts = teamsApi.kind === "ok" ? parseTeamsApi(teamsApi.json) : [];
-    if (teamsApi.kind !== "ok") {
+    if (teamsApi.kind !== "ok" || !hasTeamsApiShape(teamsApi.json)) {
       const teams = await ctx.run.run(BIN, ["teams", "list"]);
       teamAccounts = teams.exitCode === 0 ? parseTeamsList(teams.stdout) : [];
       warnings.push("Could not read Vercel teams through the structured API; used CLI team discovery instead.");
+      if (teams.exitCode !== 0) {
+        const failure = runFailure(teams, "Discovering Vercel accounts");
+        const apiFailure =
+          teamsApi.kind === "error"
+            ? teamsApi
+            : {
+                code: "incompatible-output" as const,
+                message: "Vercel team discovery returned incompatible JSON.",
+              };
+        return {
+          tool,
+          auth: { state: "authenticated", identity },
+          accounts: [],
+          observed: {},
+          failure: failure.code === "provider-api" ? apiFailure : failure,
+          ...(warnings.length > 0 ? { warnings } : {}),
+        };
+      }
     }
     // Current Vercel accounts include the Hobby/personal scope in /v2/teams
     // (`createdDirectToHobby`). Only synthesize the legacy personal scope when
@@ -778,6 +980,7 @@ export const vercelProvider = defineProvider({
     if (mismatch) warnings.push(mismatch);
 
     const observed: JsonObject = {};
+    let probeFailure: { code: ProviderFailureCode; message: string } | undefined;
     for (const intent of req.intent) {
       if (intent.role !== "application" && intent.role !== "environment") continue;
       const scope = configString(intent.config, "scope") ?? account?.selector ?? null;
@@ -787,15 +990,19 @@ export const vercelProvider = defineProvider({
         continue;
       }
       const looked = await lookupProject(ctx, nameOrId, scope);
-      observed[intent.resourceKey] =
-        looked.kind === "found"
-          ? {
-              exists: true,
-              projectId: looked.project.id,
-              framework: manifestFramework(looked.project.framework),
-            }
-          : { exists: false };
-      if (looked.kind === "error") warnings.push(looked.message);
+      if (looked.kind === "error") {
+        observed[intent.resourceKey] = { inspection: "unavailable" };
+        probeFailure ??= { code: looked.code, message: looked.message };
+      } else {
+        observed[intent.resourceKey] =
+          looked.kind === "found"
+            ? {
+                exists: true,
+                projectId: looked.project.id,
+                framework: manifestFramework(looked.project.framework, intent.framework),
+              }
+            : { exists: false };
+      }
     }
 
     return {
@@ -803,6 +1010,7 @@ export const vercelProvider = defineProvider({
       auth: { state: "authenticated", identity, ...(account !== undefined ? { account } : {}) },
       accounts,
       observed,
+      ...(probeFailure !== undefined ? { failure: probeFailure } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     };
   },
@@ -862,6 +1070,14 @@ export const vercelProvider = defineProvider({
         warnings: ["Vercel requires application.framework in bahama.yaml."],
       };
     }
+    const operation = req.operation ?? { kind: "deploy" as const, environment: appIntent.environment ?? "production" };
+    const healthPath = configString(appIntent.config, "healthPath");
+    if (operation.kind === "deploy" && needsExplicitHealthPath(framework) && !healthPath) {
+      throw new ProviderPlanError(
+        `Vercel ${framework} deployments require config.healthPath so Bahama can verify the backend, ` +
+          "for example `/api/health`.",
+      );
+    }
     const key = appIntent.resourceKey;
     const observed = req.probe.observed[key] as JsonObject | undefined;
     const exists = observed?.["exists"] === true;
@@ -909,29 +1125,44 @@ export const vercelProvider = defineProvider({
 
     const ensureId = `${key.replaceAll(".", "-")}-ensure`;
     steps[0]!.id = ensureId;
-    const operation = req.operation ?? { kind: "deploy" as const, environment: appIntent.environment ?? "production" };
-    if (operation.kind === "deploy" && operation.environment === (appIntent.environment ?? "production")) steps.push({
-      id: `${key.replaceAll(".", "-")}-deploy`,
-      action: "vercel.deploy",
-      summary: `Deploy \`${name}\` to Vercel production`,
-      resourceKey: key,
-      effects: { deploys: true },
-      dependsOn: [ensureId, ...envStepIds],
-      inputs: baseInputs,
-      produces: ["productionUrl"],
-      postcondition: "The deployment reaches READY and the production URL responds.",
-    });
-    if (operation.kind === "deploy" && operation.environment === (appIntent.environment ?? "production")) steps.push({
-      id: `${key.replaceAll(".", "-")}-verify`,
-      action: "vercel.verify",
-      summary: `Verify \`${name}\` responds in production`,
-      resourceKey: key,
-      effects: { readOnly: true },
-      dependsOn: [`${key.replaceAll(".", "-")}-deploy`],
-      consumes: [formatCapabilityAddress({ resourceKey: key, capability: "productionUrl" })],
-      inputs: baseInputs,
-      postcondition: "A production request returns a successful or redirect response.",
-    });
+    if (operation.kind === "deploy" && operation.environment === (appIntent.environment ?? "production")) {
+      const deployStartId = `${key.replaceAll(".", "-")}-deploy-start`;
+      const deployAwaitId = `${key.replaceAll(".", "-")}-deploy-await`;
+      steps.push({
+        id: deployStartId,
+        action: "vercel.deployment.start",
+        summary: `Submit \`${name}\` to Vercel production`,
+        resourceKey: key,
+        effects: { deploys: true },
+        dependsOn: [ensureId, ...envStepIds],
+        inputs: baseInputs,
+        produces: ["deploymentId"],
+        postcondition: "Vercel accepts the deployment and returns an immutable deployment id.",
+      });
+      steps.push({
+        id: deployAwaitId,
+        action: "vercel.deployment.await",
+        summary: `Wait for Vercel deployment of \`${name}\``,
+        resourceKey: key,
+        effects: { readOnly: true },
+        dependsOn: [deployStartId],
+        consumes: [formatCapabilityAddress({ resourceKey: key, capability: "deploymentId" })],
+        inputs: baseInputs,
+        produces: ["productionUrl"],
+        postcondition: "The accepted deployment reaches READY and has a production URL.",
+      });
+      steps.push({
+        id: `${key.replaceAll(".", "-")}-verify`,
+        action: "vercel.verify",
+        summary: `Verify \`${name}\` responds in production`,
+        resourceKey: key,
+        effects: { readOnly: true },
+        dependsOn: [deployAwaitId],
+        consumes: [formatCapabilityAddress({ resourceKey: key, capability: "productionUrl" })],
+        inputs: { ...baseInputs, healthPath: healthPath ?? "/" },
+        postcondition: `A production request to ${healthPath ?? "/"} returns a successful or redirect response.`,
+      });
+    }
 
     return { steps, ...(warnings.length > 0 ? { warnings } : {}) };
   },
@@ -945,8 +1176,15 @@ export const vercelProvider = defineProvider({
         return ensureProject(ctx, step);
       case "vercel.env.set":
         return setEnv(ctx, step, inputs);
+      case "vercel.deployment.start":
+        return startDeployment(ctx, step);
+      case "vercel.deployment.await":
+        return awaitDeployment(ctx, step, inputs);
       case "vercel.deploy":
-        return deploy(ctx, step);
+        return fail(
+          "This saved plan uses the pre-resume Vercel deployment action.",
+          "Run `bahama plan` again so deployment acceptance and readiness use separate resumable steps.",
+        );
       case "vercel.verify":
         return verify(ctx, step, inputs);
       default:
@@ -988,8 +1226,8 @@ export const vercelProvider = defineProvider({
         resources.push({
           resourceKey: intent.resourceKey,
           exists: false,
-          health: { state: "unknown", reason: "Vercel project lookup failed; check authentication." },
-          detail: "lookup failed (check vercel login)",
+          health: { state: "unknown", code: looked.code, reason: looked.message },
+          detail: `lookup failed (${looked.code})`,
           drift: [],
         });
         continue;
@@ -999,7 +1237,7 @@ export const vercelProvider = defineProvider({
           resourceKey: intent.resourceKey,
           exists: false,
           health: pinnedId
-            ? { state: "unhealthy", reason: "Locked Vercel project no longer exists." }
+            ? { state: "unhealthy", code: "not-found", reason: "Locked Vercel project no longer exists." }
             : { state: "not_ready", reason: "Vercel project has not been provisioned." },
           drift: pinnedId
             ? [
@@ -1014,6 +1252,16 @@ export const vercelProvider = defineProvider({
         continue;
       }
       const detailRes = await vapi(ctx, `/v9/projects/${looked.project.id}`, scope);
+      if (detailRes.kind === "error") {
+        resources.push({
+          resourceKey: intent.resourceKey,
+          exists: true,
+          health: { state: "unknown", code: detailRes.code, reason: detailRes.message },
+          detail: `production lookup failed (${detailRes.code})`,
+          drift: [],
+        });
+        continue;
+      }
       const url = detailRes.kind === "ok" ? productionUrlOf(detailRes.json) : null;
       resources.push({
         resourceKey: intent.resourceKey,

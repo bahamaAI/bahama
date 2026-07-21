@@ -73,12 +73,16 @@ export async function runDoctor(projectRoot: string, emitOptions: EmitOptions): 
       const probe = await driver.probe(engine.contextFor(providerId), { intent: [], locked: [] });
       checks.push({
         name: `provider:${providerId}`,
-        ok: probe.tool.installed && probe.auth.state === "authenticated",
+        ok: probe.tool.installed && probe.auth.state === "authenticated" && probe.failure === undefined,
         detail: !probe.tool.installed
           ? (probe.tool.installHint ?? "tool missing")
+          : probe.failure
+            ? `${probe.failure.code}: ${probe.failure.message}`
           : probe.auth.state === "authenticated"
             ? `authenticated as ${probe.auth.identity ?? "unknown"}`
-            : (probe.auth.loginHint ?? "not authenticated"),
+            : probe.auth.state === "unknown"
+              ? `${probe.auth.code ?? "unknown"}: ${probe.auth.reason ?? "provider check failed"}`
+              : (probe.auth.loginHint ?? "not authenticated"),
       });
       if (!probe.tool.installed) {
         requirements.push({
@@ -87,7 +91,7 @@ export async function runDoctor(projectRoot: string, emitOptions: EmitOptions): 
           tool: providerId,
           installHint: probe.tool.installHint ?? `Install the ${providerId} CLI`,
         });
-      } else if (probe.auth.state !== "authenticated") {
+      } else if (probe.auth.state !== "authenticated" && probe.auth.state !== "unknown") {
         requirements.push({
           kind: "auth",
           providerId,

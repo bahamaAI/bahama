@@ -1,3 +1,4 @@
+import type { ProviderFailureCode } from "./diagnostics.js";
 import type { JsonObject, JsonValue } from "./json.js";
 import type { SecretRef } from "./secrets.js";
 import type { Decision, Requirement } from "./results.js";
@@ -97,5 +98,5 @@ export interface StepOutcome {
   /** Redaction-safe evidence for the journal. */
   receipt?: JsonObject;
   /** Human-readable failure cause and recovery hint. */
-  error?: { message: string; recovery?: string };
+  error?: { code?: ProviderFailureCode; message: string; recovery?: string };
 }
