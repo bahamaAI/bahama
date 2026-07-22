@@ -1,6 +1,6 @@
 {
   "name": "@bahama/provider-neon",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "private": true,
   "description": "Neon provider driver. Serverless Postgres on the user's own Neon account, wrapping the official neon CLI (neonctl): project ensure/adopt, sealed connection-string production, and an in-process SQL migration runner.",
   "files": ["dist", "README.md"],
@@ -18,7 +18,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@bahama/provider-kit": "0.1.0-alpha.4",
+    "@bahama/provider-kit": "0.1.0-alpha.5",
     "pg": "^8.16.0",
     "zod": "^3.25.0"
   },

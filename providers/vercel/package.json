@@ -1,6 +1,6 @@
 {
   "name": "@bahama/provider-vercel",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "private": true,
   "description": "Vercel provider driver. Deploys verified Next.js, Vite, Hono, and static application shapes on the user's own Vercel account by wrapping the official vercel CLI.",
   "files": ["dist", "README.md"],
@@ -18,7 +18,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@bahama/provider-kit": "0.1.0-alpha.4",
+    "@bahama/provider-kit": "0.1.0-alpha.5",
     "zod": "^3.25.0"
   }
 }
