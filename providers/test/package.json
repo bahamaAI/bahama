@@ -1,6 +1,6 @@
 {
   "name": "@bahama/provider-test",
-  "version": "0.1.0-alpha.5",
+  "version": "0.1.0-alpha.6",
   "private": true,
   "description": "Deterministic contract-test provider and reference driver implementation. Simulates a live provider (state file), installation/auth gaps, multiple accounts, and injected failures. Enabled in the CLI only with BAHAMA_ENABLE_TEST=1.",
   "files": ["dist", "README.md"],
@@ -18,10 +18,10 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@bahama/provider-kit": "0.1.0-alpha.5",
+    "@bahama/provider-kit": "0.1.0-alpha.6",
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@bahama/core": "0.1.0-alpha.5"
+    "@bahama/core": "0.1.0-alpha.6"
   }
 }

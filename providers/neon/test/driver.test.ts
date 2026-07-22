@@ -305,6 +305,33 @@ describe("probe", () => {
     expect(result.observed["database"]).toEqual({ inspection: "unavailable" });
   });
 
+  it("refuses ambiguous exact-name discovery instead of selecting the first Neon project", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, (cmd, args) => {
+      const line = args.join(" ");
+      if (line === "--version") return { stdout: "2.20.0" };
+      if (line === "me --output json") return { stdout: JSON.stringify({ id: "user-1", email: "dev@example.com" }) };
+      if (line === "orgs list --output json") return { stdout: "[]" };
+      if (line === "projects list --output json") {
+        return {
+          stdout: JSON.stringify({
+            projects: [
+              { id: "proj-first", name: "my-app" },
+              { id: "proj-second", name: "my-app" },
+            ],
+          }),
+        };
+      }
+      return undefined;
+    });
+    const result = await neonProvider.probe(ctx, { intent: [DB_INTENT], locked: [] });
+    expect(result.failure).toMatchObject({
+      code: "provider-api",
+      message: expect.stringContaining("Found 2 Neon projects named `my-app`"),
+    });
+    expect(result.observed["database"]).toEqual({ inspection: "unavailable" });
+  });
+
   it("seals the connection string and reads the migration ledger during probe", async () => {
     const root = await scratchDir();
     const sql = "create table a (id int);";
@@ -580,7 +607,21 @@ describe("plan", () => {
       ctx,
       planRequest({ probe: probed({ observed: { database: { exists: true, projectId: "proj-123" } } }) }),
     );
-    expect(contribution.steps[0]!.effects).toEqual({ adoptsResource: true });
+    expect(contribution.steps[0]).toMatchObject({
+      effects: { adoptsResource: true },
+      inputs: { projectId: "proj-123", adoptionCandidate: true },
+    });
+  });
+
+  it("refuses to plan adoption when probe did not resolve an immutable project id", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => undefined);
+    await expect(
+      neonProvider.plan(
+        ctx,
+        planRequest({ probe: probed({ observed: { database: { exists: true } } }) }),
+      ),
+    ).rejects.toThrow(/cannot safely plan its adoption/);
   });
 });
 
@@ -625,15 +666,85 @@ describe("execute neon.project.ensure", () => {
     expect(calls.some((call) => call.args[0] === "connection-string")).toBe(false);
   });
 
-  it("adopts an existing project by name and fetches the connection string via the CLI", async () => {
+  it("adopts the exact project id pinned by the plan without repeating name discovery", async () => {
     const root = await scratchDir();
     const { ctx, calls } = makeCtx(root, (cmd, args) => {
       const line = args.join(" ");
-      if (line === "projects list --org-id org-1 --output json")
-        return { stdout: JSON.stringify({ projects: [{ id: "proj-123", name: "my-app" }] }) };
       if (line === "connection-string --project-id proj-123") return { stdout: `${CONNECTION_URL}\n` };
       if (line === "projects get proj-123 --output json")
         return { stdout: JSON.stringify({ id: "proj-123", name: "my-app" }) };
+      return undefined;
+    });
+    const outcome = await neonProvider.execute(
+      ctx,
+      planned({
+        action: "neon.project.ensure",
+        inputs: {
+          name: "my-app",
+          region: null,
+          orgId: "org-1",
+          projectId: "proj-123",
+          adoptionCandidate: true,
+        },
+      }),
+      { consumed: {} },
+    );
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      postconditionVerified: true,
+      identity: { projectId: "proj-123" },
+      receipt: { existed: true },
+    });
+    expect(calls.some((call) => call.args[0] === "projects" && call.args[1] === "list")).toBe(false);
+    expect(calls.some((call) => call.args.join(" ").startsWith("projects create"))).toBe(false);
+    expect(JSON.stringify(outcome)).not.toContain("sekret");
+    // The connection string is sealed INSIDE the runner, at capture.
+    const cs = calls.find((call) => call.args[0] === "connection-string")!;
+    expect(cs.options?.captureSecretStdout).toEqual({ name: "database.connectionUrl" });
+  });
+
+  it("rejects a renamed adoption candidate before fetching its connection string", async () => {
+    const root = await scratchDir();
+    const { ctx, calls } = makeCtx(root, (cmd, args) => {
+      if (args.join(" ") === "projects get proj-123 --output json") {
+        return { stdout: JSON.stringify({ id: "proj-123", name: "renamed-app" }) };
+      }
+      return undefined;
+    });
+    const outcome = await neonProvider.execute(
+      ctx,
+      planned({
+        action: "neon.project.ensure",
+        inputs: {
+          name: "my-app",
+          region: null,
+          orgId: "org-1",
+          projectId: "proj-123",
+          adoptionCandidate: true,
+        },
+      }),
+      { consumed: {} },
+    );
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "provider-api", recovery: expect.stringContaining("bahama plan") },
+    });
+    expect(calls.some((call) => call.args[0] === "connection-string")).toBe(false);
+  });
+
+  it("refuses ambiguous name discovery when executing a legacy unlocked plan", async () => {
+    const root = await scratchDir();
+    const { ctx, calls } = makeCtx(root, (cmd, args) => {
+      if (args.join(" ") === "projects list --org-id org-1 --output json") {
+        return {
+          stdout: JSON.stringify({
+            projects: [
+              { id: "proj-first", name: "my-app" },
+              { id: "proj-second", name: "my-app" },
+            ],
+          }),
+        };
+      }
       return undefined;
     });
     const outcome = await neonProvider.execute(
@@ -645,16 +756,10 @@ describe("execute neon.project.ensure", () => {
       { consumed: {} },
     );
     expect(outcome).toMatchObject({
-      status: "succeeded",
-      postconditionVerified: true,
-      identity: { projectId: "proj-123" },
-      receipt: { existed: true },
+      status: "failed",
+      error: { code: "provider-api", message: expect.stringContaining("Found 2 Neon projects") },
     });
     expect(calls.some((call) => call.args.join(" ").startsWith("projects create"))).toBe(false);
-    expect(JSON.stringify(outcome)).not.toContain("sekret");
-    // The connection string is sealed INSIDE the runner, at capture.
-    const cs = calls.find((call) => call.args[0] === "connection-string")!;
-    expect(cs.options?.captureSecretStdout).toEqual({ name: "database.connectionUrl" });
   });
 
   it("fails with recovery guidance when the locked project no longer exists", async () => {
@@ -913,6 +1018,30 @@ describe("status", () => {
     expect(report.resources[0]).toMatchObject({
       exists: false,
       health: { state: "unknown", code: "authentication", reason: expect.stringContaining("authentication expired") },
+      drift: [],
+    });
+  });
+
+  it("reports ambiguous unlocked exact-name matches as unknown", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, (cmd, args) => {
+      if (args.join(" ") === "projects list --output json") {
+        return {
+          stdout: JSON.stringify({
+            projects: [
+              { id: "proj-first", name: "my-app" },
+              { id: "proj-second", name: "my-app" },
+            ],
+          }),
+        };
+      }
+      return undefined;
+    });
+    const report = await neonProvider.status(ctx, { intent: [DB_INTENT], locked: [] });
+    expect(report.resources[0]).toMatchObject({
+      exists: false,
+      health: { state: "unknown", code: "provider-api", reason: expect.stringContaining("Found 2 Neon projects") },
+      detail: "multiple exact-name matches",
       drift: [],
     });
   });

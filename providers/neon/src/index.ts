@@ -121,6 +121,11 @@ interface NeonProject {
   name: string;
 }
 
+type ExactProjectMatch =
+  | { kind: "absent" }
+  | { kind: "found"; project: NeonProject }
+  | { kind: "ambiguous"; count: number };
+
 /** Tolerates both bare-array and `{ projects: [...] }` CLI output shapes. */
 function parseProjectList(text: string): NeonProject[] {
   const parsed = parseJson(text);
@@ -137,6 +142,26 @@ function parseProjectList(text: string): NeonProject[] {
     }
   }
   return projects;
+}
+
+function exactProjectMatch(projects: NeonProject[], name: string): ExactProjectMatch {
+  const matches = [
+    ...new Map(
+      projects
+        .filter((project) => project.name === name)
+        .map((project) => [project.id, project] as const),
+    ).values(),
+  ];
+  if (matches.length === 0) return { kind: "absent" };
+  if (matches.length === 1) return { kind: "found", project: matches[0]! };
+  return { kind: "ambiguous", count: matches.length };
+}
+
+function ambiguousProjectMessage(name: string, count: number): string {
+  return (
+    `Found ${count} Neon projects named \`${name}\` in the selected Neon account. ` +
+    "Bahama cannot safely choose one to adopt; restore the original bahama.lock or rename the intended project so its name is unique."
+  );
 }
 
 function hasProjectListShape(text: string): boolean {
@@ -349,6 +374,7 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
   const region = typeof step.inputs?.["region"] === "string" ? step.inputs["region"] : null;
   const orgId = typeof step.inputs?.["orgId"] === "string" ? step.inputs["orgId"] : null;
   const pinnedId = typeof step.inputs?.["projectId"] === "string" ? step.inputs["projectId"] : null;
+  const adoptionCandidate = step.inputs?.["adoptionCandidate"] === true;
   const orgArgs = orgId ? ["--org-id", orgId] : [];
   const resourceKey = step.resourceKey ?? "database";
 
@@ -359,15 +385,25 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
   if (projectId) {
     const got = await ctx.run.run(bin, ["projects", "get", projectId, "--output", "json"]);
     if (got.exitCode !== 0) {
-      const failure = runFailure(got, `Fetching locked Neon project ${projectId}`);
+      const failure = runFailure(got, `Fetching planned Neon project ${projectId}`);
       return fail(
         failure.message,
-        "If the project was deleted, remove it from bahama.lock and re-plan.",
+        adoptionCandidate
+          ? "The exact project selected during planning is no longer available; run `bahama plan` again."
+          : "If the project was deleted, keep the remaining lock state and re-plan.",
         failure.code,
       );
     }
-    if (!parseProject(got.stdout)) {
+    const project = parseProject(got.stdout);
+    if (!project) {
       return fail("Neon project lookup returned no parsable project id.", undefined, "incompatible-output");
+    }
+    if (adoptionCandidate && project.name !== name) {
+      return fail(
+        `Planned Neon project ${projectId} is now named \`${project.name}\`, not \`${name}\`.`,
+        "Run `bahama plan` again to review the current resource identity.",
+        "provider-api",
+      );
     }
   } else {
     const listed = await ctx.run.run(bin, ["projects", "list", ...orgArgs, "--output", "json"]);
@@ -378,8 +414,12 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
     if (!hasProjectListShape(listed.stdout)) {
       return fail("Listing Neon projects returned incompatible JSON.", undefined, "incompatible-output");
     }
-    projectId = parseProjectList(listed.stdout).find((p) => p.name === name)?.id ?? null;
-    if (!projectId) {
+    const match = exactProjectMatch(parseProjectList(listed.stdout), name);
+    if (match.kind === "ambiguous") {
+      return fail(ambiguousProjectMessage(name, match.count), undefined, "provider-api");
+    }
+    projectId = match.kind === "found" ? match.project.id : null;
+    if (projectId === null) {
       const created = await ctx.run.run(
         bin,
         [
@@ -732,14 +772,21 @@ export const neonProvider = defineProvider({
         probeFailure ??= { code: "incompatible-output", message: "Listing Neon projects returned incompatible JSON." };
         continue;
       }
-      const match =
-        name ? (parseProjectList(listed.stdout).find((p) => p.name === name) ?? null) : null;
-      observed[intent.resourceKey] = match
+      const match = name ? exactProjectMatch(parseProjectList(listed.stdout), name) : { kind: "absent" as const };
+      if (match.kind === "ambiguous") {
+        observed[intent.resourceKey] = { inspection: "unavailable" };
+        probeFailure ??= {
+          code: "provider-api",
+          message: ambiguousProjectMessage(name!, match.count),
+        };
+        continue;
+      }
+      observed[intent.resourceKey] = match.kind === "found"
         ? {
             exists: true,
-            projectId: match.id,
+            projectId: match.project.id,
             ...(migrationFiles.length > 0
-              ? await inspectMigrationLedger(ctx, bin, match.id, intent.resourceKey)
+              ? await inspectMigrationLedger(ctx, bin, match.project.id, intent.resourceKey)
               : {}),
           }
         : { exists: false };
@@ -790,19 +837,28 @@ export const neonProvider = defineProvider({
       const observed = req.probe.observed[intent.resourceKey] as JsonObject | undefined;
       const exists = observed?.["exists"] === true;
       const lockedId = lockedProjectId(req, intent.resourceKey);
+      const observedId = typeof observed?.["projectId"] === "string" ? observed["projectId"] : null;
+      if (exists && lockedId === null && observedId === null) {
+        throw new ProviderPlanError(
+          `Neon found \`${name}\` but returned no project id, so Bahama cannot safely plan its adoption.`,
+        );
+      }
       // If probe confirmed the locked resource is gone, plan a replacement
-      // without leaking the stale id into execution.
-      const pinnedId = exists ? lockedId : null;
+      // without leaking the stale id into execution. An unlocked exact-name
+      // match is pinned into the immutable plan so apply cannot adopt a
+      // different resource if provider list ordering changes.
+      const pinnedId = exists ? (lockedId ?? observedId) : null;
+      const adoptionCandidate = exists && lockedId === null;
       const region = configString(intent.config, "region");
       const ensureId = `${intent.resourceKey}-ensure`;
 
       steps.push({
         id: ensureId,
         action: "neon.project.ensure",
-        summary: ensureSummary(name, exists, pinnedId !== null),
+        summary: ensureSummary(name, exists, lockedId !== null),
         resourceKey: intent.resourceKey,
-        effects: ensureEffects(exists, pinnedId !== null),
-        inputs: { name, region, orgId, projectId: pinnedId },
+        effects: ensureEffects(exists, lockedId !== null),
+        inputs: { name, region, orgId, projectId: pinnedId, adoptionCandidate },
         produces: ["connectionUrl"],
         postcondition: "The Neon project exists and its connection string resolves.",
       });
@@ -961,14 +1017,28 @@ export const neonProvider = defineProvider({
         });
         continue;
       }
-      const match = name ? (parseProjectList(listed.stdout).find((p) => p.name === name) ?? null) : null;
+      const match = name ? exactProjectMatch(parseProjectList(listed.stdout), name) : { kind: "absent" as const };
+      if (match.kind === "ambiguous") {
+        resources.push({
+          resourceKey: intent.resourceKey,
+          exists: false,
+          health: {
+            state: "unknown",
+            code: "provider-api",
+            reason: ambiguousProjectMessage(name!, match.count),
+          },
+          detail: "multiple exact-name matches",
+          drift: [],
+        });
+        continue;
+      }
       resources.push({
         resourceKey: intent.resourceKey,
-        exists: match !== null,
-        health: match
+        exists: match.kind === "found",
+        health: match.kind === "found"
           ? { state: "ready" }
           : { state: "not_ready", reason: "Neon project has not been provisioned." },
-        ...(match ? { detail: match.name } : {}),
+        ...(match.kind === "found" ? { detail: match.project.name } : {}),
         drift: [],
       });
     }

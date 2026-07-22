@@ -1,6 +1,6 @@
 {
   "name": "@bahama/provider-bahama-cloud",
-  "version": "0.1.0-alpha.5",
+  "version": "0.1.0-alpha.6",
   "private": true,
   "description": "Bahama Cloud provider driver. Managed zero-config hosting for static, Vite, and Hono apps with optional D1 storage, driven entirely over the hosted control plane's REST API with OAuth bearer tokens.",
   "files": ["dist", "README.md"],
@@ -18,7 +18,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@bahama/provider-kit": "0.1.0-alpha.5",
+    "@bahama/provider-kit": "0.1.0-alpha.6",
     "fflate": "^0.8.2",
     "zod": "^3.25.0"
   }

@@ -158,6 +158,9 @@ Before implementation, answer these questions for each resource:
 Locked IDs are authoritative. Names and slugs are selectors or labels, not
 identity. When several accounts are valid, return a `Decision` with a safe
 manifest `writeBack` path instead of choosing the CLI's ambient default.
+Unlocked adoption must resolve exactly one match and pin its durable ID in the
+plan. Apply that ID directly; if matches are ambiguous or the candidate
+changes, stop and re-plan instead of choosing by list order.
 
 If a provider accepts an asynchronous mutation before final readiness, split
 it into acceptance and readiness steps. The acceptance step produces a durable,

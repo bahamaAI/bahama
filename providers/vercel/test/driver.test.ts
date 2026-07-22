@@ -515,7 +515,11 @@ describe("plan", () => {
       ctx,
       planRequest({ probe: probed({ observed: { application: { exists: true, projectId: "prj_123" } } }) }),
     );
-    expect(adopted.steps[0]!.effects).toEqual({ adoptsResource: true });
+    expect(adopted.steps[0]).toMatchObject({
+      effects: { adoptsResource: true },
+      inputs: { projectId: "prj_123", adoptionCandidate: true },
+    });
+    expect(adopted.steps.every((step) => step.inputs?.["projectId"] === "prj_123")).toBe(true);
 
     const locked = await vercelProvider.plan(
       ctx,
@@ -525,6 +529,17 @@ describe("plan", () => {
       }),
     );
     expect(locked.steps[0]!.effects).toEqual({ readOnly: true });
+  });
+
+  it("refuses to plan adoption when probe did not resolve an immutable project id", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => undefined);
+    await expect(
+      vercelProvider.plan(
+        ctx,
+        planRequest({ probe: probed({ observed: { application: { exists: true } } }) }),
+      ),
+    ).rejects.toThrow(/cannot safely plan its adoption/);
   });
 
   it("plans a consequential configuration change when Vercel has the wrong framework preset", async () => {
@@ -642,21 +657,93 @@ describe("execute vercel.project.ensure", () => {
     expect(calls.some((call) => line(call.args) === "project add my-app")).toBe(true);
   });
 
-  it("adopts an existing project without creating and passes --scope through", async () => {
+  it("adopts the exact project id pinned by the plan without repeating name discovery", async () => {
     const root = await scratchDir();
     const { ctx, calls } = makeCtx(root, (cmd, args) => {
-      if (line(args) === "api /v9/projects/my-app --scope acme") return { stdout: PROJECT_JSON };
+      if (line(args) === "api /v9/projects/prj_123 --scope acme") return { stdout: PROJECT_JSON };
       return undefined;
     });
     const outcome = await vercelProvider.execute(
       ctx,
       planned({
         action: "vercel.project.ensure",
-        inputs: { name: "my-app", scope: "acme", framework: "nextjs" },
+        inputs: {
+          name: "my-app",
+          scope: "acme",
+          framework: "nextjs",
+          projectId: "prj_123",
+          adoptionCandidate: true,
+        },
       }),
       { consumed: {} },
     );
     expect(outcome).toMatchObject({ status: "succeeded", receipt: { existed: true } });
+    expect(calls.some((call) => line(call.args) === "api /v9/projects/my-app --scope acme")).toBe(false);
+    expect(calls.every((call) => call.args[0] !== "project")).toBe(true);
+  });
+
+  it("rejects a renamed adoption candidate before changing its framework", async () => {
+    const root = await scratchDir();
+    const { ctx, calls } = makeCtx(root, (cmd, args) => {
+      if (line(args) === "api /v9/projects/prj_123 --scope acme") {
+        return {
+          stdout: JSON.stringify({
+            id: "prj_123",
+            name: "renamed-app",
+            accountId: "team_acme",
+            framework: "nextjs",
+          }),
+        };
+      }
+      return undefined;
+    });
+    const outcome = await vercelProvider.execute(
+      ctx,
+      planned({
+        action: "vercel.project.ensure",
+        inputs: {
+          name: "my-app",
+          scope: "acme",
+          framework: "nextjs",
+          projectId: "prj_123",
+          adoptionCandidate: true,
+        },
+      }),
+      { consumed: {} },
+    );
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "provider-api", recovery: expect.stringContaining("bahama plan") },
+    });
+    expect(calls.every((call) => !call.args.includes("PATCH"))).toBe(true);
+  });
+
+  it("does not replace a planned adoption candidate that disappears before apply", async () => {
+    const root = await scratchDir();
+    const { ctx, calls } = makeCtx(root, (cmd, args) => {
+      if (line(args) === "api /v9/projects/prj_123 --scope acme") {
+        return { stdout: JSON.stringify({ error: { code: "not_found", message: "Project not found" } }) };
+      }
+      return undefined;
+    });
+    const outcome = await vercelProvider.execute(
+      ctx,
+      planned({
+        action: "vercel.project.ensure",
+        inputs: {
+          name: "my-app",
+          scope: "acme",
+          framework: "nextjs",
+          projectId: "prj_123",
+          adoptionCandidate: true,
+        },
+      }),
+      { consumed: {} },
+    );
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "not-found", recovery: expect.stringContaining("bahama plan") },
+    });
     expect(calls.every((call) => call.args[0] !== "project")).toBe(true);
   });
 

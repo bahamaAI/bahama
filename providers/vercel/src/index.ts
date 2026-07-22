@@ -497,10 +497,28 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
   const scope = inputString(step, "scope");
   const framework = inputString(step, "framework");
   if (!framework) return fail(`Step ${step.id} is missing its framework input.`);
+  const plannedId = inputString(step, "projectId");
+  const adoptionCandidate = step.inputs?.["adoptionCandidate"] === true;
 
-  const existing = await lookupProject(ctx, name, scope);
+  const existing = await lookupProject(ctx, plannedId ?? name, scope);
   if (existing.kind === "error") return fail(existing.message, undefined, existing.code);
   const existed = existing.kind === "found";
+  if (plannedId && !existed) {
+    return fail(
+      `Planned Vercel project ${plannedId} was not found in the selected account.`,
+      adoptionCandidate
+        ? "The exact project selected during planning is no longer available; run `bahama plan` again."
+        : "Keep the remaining lock state and re-plan to replace the missing project.",
+      "not-found",
+    );
+  }
+  if (adoptionCandidate && existing.kind === "found" && existing.project.name !== name) {
+    return fail(
+      `Planned Vercel project ${plannedId} is now named \`${existing.project.name}\`, not \`${name}\`.`,
+      "Run `bahama plan` again to review the current resource identity.",
+      "provider-api",
+    );
+  }
   if (!existed) {
     const created = await ctx.run.run(BIN, ["project", "add", name, ...scopeArgs(scope)]);
     if (created.exitCode !== 0) {
@@ -509,7 +527,7 @@ async function ensureProject(ctx: ProviderContext, step: PlannedStep): Promise<S
     }
   }
 
-  const check = await lookupProject(ctx, name, scope);
+  const check = await lookupProject(ctx, plannedId ?? name, scope);
   if (check.kind !== "found") {
     return fail(
       check.kind === "error"
@@ -1082,15 +1100,23 @@ export const vercelProvider = defineProvider({
     const observed = req.probe.observed[key] as JsonObject | undefined;
     const exists = observed?.["exists"] === true;
     const lockedId = lockedProjectId(req, key);
+    const observedId = typeof observed?.["projectId"] === "string" ? observed["projectId"] : null;
+    if (exists && lockedId === null && observedId === null) {
+      throw new ProviderPlanError(
+        `Vercel found \`${name}\` but returned no project id, so Bahama cannot safely plan its adoption.`,
+      );
+    }
     // A confirmed-missing locked project is replacement intent. Do not carry
-    // its stale id into ensure/env/deploy; the replacement is resolved by name.
-    const pinnedId = exists ? lockedId : null;
-    const locked = pinnedId !== null;
+    // its stale id into ensure/env/deploy; the replacement is resolved by
+    // name. An unlocked exact-name match is pinned into the immutable plan.
+    const pinnedId = exists ? (lockedId ?? observedId) : null;
+    const locked = lockedId !== null;
+    const adoptionCandidate = exists && lockedId === null;
     const observedFramework = observed?.["framework"];
     const frameworkMismatch =
       exists && typeof observedFramework === "string" && observedFramework !== framework;
-    // The locked project id rides every step so execution pins the vercel CLI
-    // to the planned project (VERCEL_PROJECT_ID) instead of .vercel/project.json.
+    // The planned project id rides every provider operation so execution pins
+    // the vercel CLI to that identity instead of .vercel/project.json.
     const baseInputs = { name, scope, projectId: pinnedId, framework };
 
     const steps: ContributedStep[] = [];
@@ -1100,7 +1126,7 @@ export const vercelProvider = defineProvider({
       summary: ensureSummary(name, exists, locked, frameworkMismatch),
       resourceKey: key,
       effects: ensureEffects(exists, locked, frameworkMismatch),
-      inputs: baseInputs,
+      inputs: { ...baseInputs, adoptionCandidate },
       postcondition: `Project \`${name}\` exists on Vercel.`,
     });
 

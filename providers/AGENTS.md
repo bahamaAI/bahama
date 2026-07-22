@@ -20,6 +20,7 @@ For a new provider or a material capability expansion, follow the complete order
 
 - Keep implementation, descriptor prose, realistic redacted fixtures, and the `bahama` skill synchronized.
 - Preserve durable account and resource IDs. Never depend on a CLI's implicit account or local project link when the plan or lock specifies one.
+- For unlocked adoption, require one exact match, pin its durable ID in the plan, and apply by ID rather than repeating name discovery.
 - Parse external responses in small helpers and add the real redacted shape as a fixture when a provider changes.
 - A new action needs semantic effects, deterministic inputs, a stated postcondition, execution coverage, and status behavior.
 - Do not add framework, engine, or capability claims until planning, execution, verification, tests, and skill guidance agree.
