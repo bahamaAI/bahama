@@ -10,6 +10,9 @@ Your agent can write the code, but then what? Bahama gives agents a safe, reliab
 
 Works across Claude Code, Codex, Cursor, and all major coding agents — and with provider accounts you already have (Vercel, Neon, etc.) or directly on the managed [Bahama Cloud](https://www.bahama.ai).
 
+
+[Website](https://www.bahama.ai) | [Install](https://bahama.ai/install.md) | [Documentation](https://www.bahama.ai/docs)
+
 <img src=".github/assets/plan-apply.svg" width="720" alt="Demo: you ask your agent for Postgres, the agent plans it with Bahama, you approve, and Bahama builds and verifies it" />
 
 </div>
