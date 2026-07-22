@@ -1,0 +1,13 @@
+node_modules/
+dist/
+
+.env
+.env.*
+!.env.example
+
+.bahama/
+.vercel/
+.DS_Store
+*.log
+.env.local
+

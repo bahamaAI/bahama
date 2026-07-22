@@ -1,0 +1,26 @@
+version: 1
+project:
+  name: sunset-supply-co
+
+application:
+  framework: vite-hono
+
+environments:
+  local:
+    provider: local
+  production:
+    provider: vercel
+    config:
+      healthPath: /api/health
+
+resources:
+  database:
+    provider: neon
+    engine: postgres
+
+bindings:
+  DATABASE_URL:
+    from: resources.database.connectionUrl
+    to:
+      - environments.local.variables
+      - environments.production.variables

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Reef Runner — chart the shallows, chase the horizon</title>
+<meta name="description" content="A one-button jet ski sprint through a living tropical reef. Thread the racing line, dodge coral, and chase the horizon.">
+<meta name="theme-color" content="#032d36">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌊</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,600;0,9..144,700;0,9..144,900;1,9..144,500;1,9..144,600&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css?v=7">
+</head>
+<body>
+
+<div id="app">
+  <canvas id="scene" aria-hidden="true"></canvas>
+
+  <!-- ============ HUD (in-game) ============ -->
+  <div id="hud" class="layer hidden">
+    <div class="hud-top">
+      <div class="hud-score">
+        <span class="hud-score__label">RUN</span>
+        <span class="hud-score__value" id="scoreValue">0</span>
+        <span class="hud-mult" id="multBadge">×1</span>
+      </div>
+      <div class="status-rail" id="statusRail">
+        <span class="status-pill status-pill--boost" id="boostStatus">BOOST</span>
+        <span class="status-pill status-pill--shield" id="shieldStatus">SHIELD</span>
+      </div>
+      <div class="hud-best">
+        <span class="hud-best__label">Best</span>
+        <span class="hud-best__value" id="bestValue">0</span>
+      </div>
+      <button id="pauseBtn" class="icon-btn" aria-label="Pause">
+        <svg viewBox="0 0 24 24" width="20" height="20"><rect x="5" y="4" width="5" height="16" rx="1.5"/><rect x="14" y="4" width="5" height="16" rx="1.5"/></svg>
+      </button>
+    </div>
+    <div class="hud-hint" id="hudHint"><span>STEER</span> tap or drag to your line</div>
+    <div class="hud-combo" id="comboFlash"></div>
+  </div>
+
+  <!-- ============ Start Screen ============ -->
+  <div id="startScreen" class="layer overlay">
+    <div class="postcard start-card">
+      <div class="start-card__topline"><span>BAHAMA ARCADE / 001</span><span>ENDLESS RUN</span></div>
+      <p class="eyebrow">the water is your racetrack</p>
+      <h1 class="title">Reef<span>Runner</span></h1>
+      <p class="tagline">Cut through a living lagoon on a fire-red jet ski. Pick a line. Chase the treasure.</p>
+
+      <div class="legend">
+        <div class="legend__group">
+          <span class="legend__heading legend__heading--good">Grab these</span>
+          <div class="legend__row"><span class="legend-emoji">🪙</span>Treasure <b>combo</b></div>
+          <div class="legend__row"><span class="legend-emoji">⚡</span>Turbo <b>speed</b></div>
+          <div class="legend__row"><span class="legend-emoji">🛡️</span>Shield <b>save</b></div>
+        </div>
+        <div class="legend__group">
+          <span class="legend__heading legend__heading--bad">Avoid</span>
+          <div class="legend__row"><span class="legend-emoji">🪨</span>Rocks</div>
+          <div class="legend__row"><span class="legend-emoji">💣</span>Bombs</div>
+          <div class="legend__row"><span class="legend-emoji">⛈️</span>Squalls</div>
+        </div>
+      </div>
+
+      <button id="playBtn" class="btn btn--primary"><span>Launch the ski</span><i>→</i></button>
+      <p class="control-hint">Tap or drag to steer · ↑ ↓ or W S · release holds your line</p>
+
+      <div class="best-strip" id="bestStrip" hidden>
+        <div><span class="best-strip__num" id="bestScoreStart">0</span><span class="best-strip__lbl">Best Score</span></div>
+        <div><span class="best-strip__num" id="bestRunsStart">0</span><span class="best-strip__lbl">Runs</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Pause Screen ============ -->
+  <div id="pauseScreen" class="layer overlay hidden">
+    <div class="postcard pause-card">
+      <h2 class="title title--sm">Engine idle</h2>
+      <button id="resumeBtn" class="btn btn--primary">Resume</button>
+      <button id="restartFromPauseBtn" class="btn btn--ghost">Restart Run</button>
+      <button id="quitBtn" class="btn btn--ghost">Back to Beach</button>
+    </div>
+  </div>
+
+  <!-- ============ Game Over / Score Card ============ -->
+  <div id="gameOverScreen" class="layer overlay hidden">
+    <div class="postcard gameover-card">
+      <div class="stamp" id="newBestStamp" hidden>New<br>Best</div>
+      <p class="eyebrow" id="wreckLine">Run complete</p>
+      <h2 class="title title--sm">Afterglow</h2>
+
+      <canvas id="scoreCardCanvas" width="640" height="400"></canvas>
+
+      <div class="stat-grid">
+        <div class="stat"><span class="stat__num" id="finalScore">0</span><span class="stat__lbl">Score</span></div>
+        <div class="stat"><span class="stat__num" id="finalDistance">0</span><span class="stat__lbl">Reef Miles</span></div>
+        <div class="stat"><span class="stat__num" id="finalMult">×1</span><span class="stat__lbl">Best Combo</span></div>
+        <div class="stat"><span class="stat__num" id="finalPassengers">0</span><span class="stat__lbl">Shells Found</span></div>
+      </div>
+
+      <div class="btn-row">
+        <button id="playAgainBtn" class="btn btn--primary">Run It Back</button>
+        <button id="shareBtn" class="btn btn--ghost">Share Card</button>
+        <button id="downloadBtn" class="btn btn--ghost">Save Card</button>
+      </div>
+      <p class="copy-feedback" id="copyFeedback"></p>
+    </div>
+  </div>
+
+  <div id="orientationNote" class="layer overlay hidden">
+    <div class="postcard">
+      <p class="tagline">Rotate for a wider horizon — or carry on, captain.</p>
+      <button id="dismissOrientation" class="btn btn--ghost">Carry on</button>
+    </div>
+  </div>
+</div>
+
+<script src="game.js?v=7"></script>
+</body>
+</html>

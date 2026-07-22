@@ -1,0 +1,12 @@
+version: 1
+project:
+  name: reef-runner
+
+application:
+  framework: static-site
+
+environments:
+  local:
+    provider: local
+  production:
+    provider: bahama-cloud
