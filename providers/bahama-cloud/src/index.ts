@@ -37,6 +37,11 @@ const DEFAULT_BASE_URL = "https://www.bahama.ai";
 const LOGIN_HINT = `bahama auth login ${PROVIDER_ID}`;
 // Mirrors DEFAULT_MAX_UPLOAD_BYTES in the control plane's deployment contract.
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+// Control-plane calls are short metadata operations. A bounded deadline keeps
+// agent sandboxes that silently drop network traffic from stalling for the
+// core HTTP client's broader 60-second default. It does not bound source
+// upload time, remote builds, or the overall deployment polling window.
+const CONTROL_PLANE_TIMEOUT_MS = 12_000;
 const POLL_INTERVAL_MS = 3_000;
 // The control plane's default build-stage timeout is 15 minutes. Keep one
 // polling window beyond that default; a timeout remains safely resumable.
@@ -185,6 +190,10 @@ function cloudRequestRecovery(error: CloudRequestError): string {
   return "Check network access to Bahama Cloud, then re-run the same command.";
 }
 
+function cloudRequestStatusReason(error: CloudRequestError): string {
+  return `${error.message} ${cloudRequestRecovery(error)}`;
+}
+
 /**
  * A token that is valid RIGHT NOW, sealed before any request or log can see
  * it. Resolution order: BAHAMA_TOKEN (CI), then the CLI-injected credential
@@ -235,6 +244,7 @@ async function api(
           url: `${baseUrl()}${path}`,
           headers: { authorization: `Bearer ${raw}` },
           ...(body !== undefined ? { body } : {}),
+          timeoutMs: CONTROL_PLANE_TIMEOUT_MS,
         }),
       ),
     );
@@ -908,10 +918,10 @@ export const bahamaCloudProvider = defineProvider({
       if (!(error instanceof CloudRequestError)) throw error;
       return {
         tool,
-        auth: { state: "unknown", code: error.code, reason: error.message },
+        auth: { state: "unknown", code: error.code, reason: cloudRequestStatusReason(error) },
         accounts: [],
         observed: {},
-        failure: { code: error.code, message: error.message },
+        failure: { code: error.code, message: cloudRequestStatusReason(error) },
       };
     }
   },
@@ -1205,7 +1215,7 @@ export const bahamaCloudProvider = defineProvider({
         resources: req.intent.map((intent) => ({
           resourceKey: intent.resourceKey,
           exists: false,
-          health: { state: "unknown", code: error.code, reason: error.message },
+          health: { state: "unknown", code: error.code, reason: cloudRequestStatusReason(error) },
           detail: "Bahama Cloud status unavailable",
           drift: [],
         })),

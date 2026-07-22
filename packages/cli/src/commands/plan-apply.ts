@@ -104,11 +104,27 @@ async function applyToEnvelope(
         ...(outcome.code ? { code: outcome.code } : {}),
         ...(outcome.recovery ? { recovery: outcome.recovery } : {}),
       });
-    case "succeeded":
-      return envelope(command, "succeeded", `Applied ${outcome.planId} (${outcome.steps.length} steps).`, {
+    case "succeeded": {
+      const productionUrl = findProductionUrl(outcome.outputs);
+      const message = productionUrl
+        ? command === "deploy"
+          ? `Deployed to ${productionUrl} (${outcome.steps.length} steps).`
+          : `Applied ${outcome.planId} (${outcome.steps.length} steps). Production: ${productionUrl}`
+        : `Applied ${outcome.planId} (${outcome.steps.length} steps).`;
+      return envelope(command, "succeeded", message, {
         planId: outcome.planId,
         opId: outcome.opId,
         steps: outcome.steps,
+        outputs: outcome.outputs,
+        ...(productionUrl ? { productionUrl } : {}),
       });
+    }
   }
+}
+
+function findProductionUrl(outputs: JsonObject): string | undefined {
+  for (const [address, value] of Object.entries(outputs)) {
+    if (address.endsWith(".productionUrl") && typeof value === "string") return value;
+  }
+  return undefined;
 }

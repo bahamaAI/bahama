@@ -46,7 +46,7 @@ export type ApplyOutcome =
   | { kind: "approval_required"; message: string; plan: PlanDocument }
   | { kind: "stale"; message: string }
   | { kind: "repo-mismatch"; message: string }
-  | { kind: "succeeded"; opId: string; planId: string; steps: StepSummary[] }
+  | { kind: "succeeded"; opId: string; planId: string; steps: StepSummary[]; outputs: JsonObject }
   | {
       kind: "failed";
       opId: string;
@@ -266,7 +266,11 @@ export async function applyPlan(
       planId,
       status: "succeeded",
     });
-    return { kind: "succeeded", opId, planId, steps: summaries };
+    const outputs: JsonObject = {};
+    for (const [address, value] of produced) {
+      if (!isSecretRef(value)) outputs[address] = value;
+    }
+    return { kind: "succeeded", opId, planId, steps: summaries, outputs };
   } finally {
     await opLock.release();
   }

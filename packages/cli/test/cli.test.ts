@@ -154,12 +154,45 @@ describe("bahama CLI golden path (test provider)", () => {
     expect(first.exitCode).toBe(0);
     expect(first.env!.status).toBe("approval_required");
     const firstPlanId = first.env!.data["planId"] as string;
-    expect((await bahama(root, ["apply", firstPlanId, "--approved"])).env!.status).toBe("succeeded");
+    const applied = await bahama(root, ["apply", firstPlanId, "--approved"]);
+    expect(applied.env!.status).toBe("succeeded");
+    expect(applied.env!.message).toContain("Production: https://testapp_environment.production.test.invalid");
+    expect(applied.env!.data["productionUrl"]).toBe("https://testapp_environment.production.test.invalid");
+    const outputs = applied.env!.data["outputs"] as Record<string, unknown>;
+    expect(outputs["environments.production.productionUrl"]).toBe("https://testapp_environment.production.test.invalid");
+    expect(Object.keys(outputs).some((address) => address.endsWith(".connectionUrl"))).toBe(false);
 
     const routine = await bahama(root, ["deploy"]);
     expect(routine.exitCode).toBe(0);
     expect(routine.env!.status).toBe("succeeded");
     expect(routine.env!.command).toBe("deploy");
+    expect(routine.env!.message).toContain("Deployed to https://testapp_environment.production.test.invalid");
+    expect(routine.env!.data["productionUrl"]).toBe("https://testapp_environment.production.test.invalid");
+  });
+
+  it("omits a local environment from status when no binding needs materialization", async () => {
+    const staticRoot = await mkdtemp(join(tmpdir(), "bahama-static-status-"));
+    await writeFile(
+      join(staticRoot, "bahama.yaml"),
+      [
+        "version: 1",
+        "project:",
+        "  name: static-status",
+        "application:",
+        "  framework: test-framework",
+        "environments:",
+        "  local:",
+        "    provider: local",
+        "  production:",
+        "    provider: test",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await bahama(staticRoot, ["status"]);
+    expect(result.env!.status).toBe("succeeded");
+    const resources = result.env!.data["resources"] as Array<{ resourceKey: string }>;
+    expect(resources.map((resource) => resource.resourceKey)).toEqual(["environment.production"]);
   });
 
   it("deploy stops for approval when provider config changes", async () => {

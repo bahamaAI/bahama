@@ -9,6 +9,7 @@ afterEach(() => {
   delete process.env["BAHAMA_CLOUD_URL"];
   delete process.env["BAHAMA_TOKEN"];
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("freshCloudToken", () => {
@@ -27,6 +28,7 @@ describe("freshCloudToken", () => {
       }),
     );
 
+    const timeout = vi.spyOn(AbortSignal, "timeout");
     const requests: string[] = [];
     vi.stubGlobal("fetch", async (input: string | URL) => {
       const url = String(input);
@@ -56,6 +58,9 @@ describe("freshCloudToken", () => {
       "https://cloud.test/.well-known/oauth-authorization-server",
       "https://cloud.test/oauth/token",
     ]);
+    expect(timeout).toHaveBeenCalledTimes(2);
+    expect(timeout).toHaveBeenNthCalledWith(1, 12_000);
+    expect(timeout).toHaveBeenNthCalledWith(2, 12_000);
 
     const stored = JSON.parse(await readFile(join(root, "credentials.json"), "utf8")) as {
       "bahama-cloud": { accessToken: string; refreshToken: string };

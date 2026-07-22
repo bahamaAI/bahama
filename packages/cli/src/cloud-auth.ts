@@ -24,6 +24,19 @@ import { configDir } from "@bahama/core";
 const CLIENT_ID = process.env["BAHAMA_CLI_OAUTH_CLIENT_ID"] ?? "bahama-cli";
 const SCOPES = "openid profile email offline_access bahama:projects";
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+const CONTROL_PLANE_TIMEOUT_MS = 12_000;
+
+async function cloudFetch(input: string | URL, init?: RequestInit): Promise<Response> {
+  const signal = AbortSignal.timeout(CONTROL_PLANE_TIMEOUT_MS);
+  try {
+    return await fetch(input, { ...init, signal });
+  } catch (error) {
+    if (signal.aborted) {
+      throw new Error(`Bahama Cloud request timed out after ${CONTROL_PLANE_TIMEOUT_MS / 1000} seconds.`);
+    }
+    throw error;
+  }
+}
 
 export function cloudBaseUrl(): string {
   return (process.env["BAHAMA_CLOUD_URL"] ?? "https://www.bahama.ai").replace(/\/$/, "");
@@ -95,7 +108,7 @@ export async function freshCloudToken(options: { forceRefresh?: boolean } = {}):
     if (!options.forceRefresh && Date.now() < latest.expiresAt - 60_000) return latest.accessToken;
 
     const endpoints = await discover();
-    const response = await fetch(endpoints.token, {
+    const response = await cloudFetch(endpoints.token, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -146,7 +159,7 @@ interface Endpoints {
 }
 
 async function discover(): Promise<Endpoints> {
-  const response = await fetch(`${cloudBaseUrl()}/.well-known/oauth-authorization-server`);
+  const response = await cloudFetch(`${cloudBaseUrl()}/.well-known/oauth-authorization-server`);
   if (!response.ok) {
     throw new Error(`OAuth discovery failed against ${cloudBaseUrl()} (HTTP ${response.status}).`);
   }
@@ -183,7 +196,7 @@ export async function cloudLogin(options: { noBrowser: boolean }): Promise<Login
   };
 
   const exchange = async (code: string, redirectUri: string): Promise<LoginResult> => {
-    const response = await fetch(endpoints.token, {
+    const response = await cloudFetch(endpoints.token, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({

@@ -16,6 +16,7 @@ import {
   readConfig,
   writeConfig,
 } from "@bahama/core";
+import { createStatusProgressReporter } from "../progress.js";
 import { UsageError, buildEngine, buildRegistry, emit, envelope, type EmitOptions } from "../runtime.js";
 
 export async function runInspect(projectRoot: string, emitOptions: EmitOptions): Promise<never> {
@@ -255,6 +256,7 @@ export async function runStatus(projectRoot: string, emitOptions: EmitOptions): 
   const lock = await loadLock(projectRoot);
   const registry = buildRegistry();
   const engine = buildEngine(projectRoot);
+  const progress = !emitOptions.json && process.stderr.isTTY ? createStatusProgressReporter() : null;
 
   const resources: ResourceStatus[] = [];
   let materialDrift = 0;
@@ -269,8 +271,16 @@ export async function runStatus(projectRoot: string, emitOptions: EmitOptions): 
   }
   for (const [name, environment] of Object.entries(manifest.environments)) {
     if (manifest.legacyApplication) continue;
+    const resourceKey = `environment.${name}`;
+    const manifestAddressPrefix = `environments.${name}.`;
+    const hasInboundBinding = Object.values(manifest.bindings).some((binding) =>
+      (Array.isArray(binding.to) ? binding.to : [binding.to]).some(
+        (destination) => destination.startsWith(manifestAddressPrefix),
+      ),
+    );
+    if (environment.provider === "local" && !hasInboundBinding) continue;
     providers.set(environment.provider, [...(providers.get(environment.provider) ?? []), {
-      resourceKey: `environment.${name}`,
+      resourceKey,
       role: "environment",
       config: environment.config ?? {},
       ...(manifest.application?.framework ? { framework: manifest.application.framework } : {}),
@@ -300,13 +310,17 @@ export async function runStatus(projectRoot: string, emitOptions: EmitOptions): 
       }
       continue;
     }
-    const report = await driver.status(engine.contextFor(providerId), {
-      intent: intents,
-      locked: intents.flatMap((intent) => {
-        const locked = lock?.resources[intent.resourceKey];
-        return locked ? [{ resourceKey: intent.resourceKey, identity: locked.identity }] : [];
-      }),
-    });
+    progress?.start(driver.descriptor.name);
+    const report = await driver.status(
+      engine.contextFor(providerId),
+      {
+        intent: intents,
+        locked: intents.flatMap((intent) => {
+          const locked = lock?.resources[intent.resourceKey];
+          return locked ? [{ resourceKey: intent.resourceKey, identity: locked.identity }] : [];
+        }),
+      },
+    ).finally(() => progress?.finish());
     for (const resource of report.resources) {
       materialDrift += resource.drift.filter((d) => d.severity === "material").length;
       resources.push(resource);

@@ -229,7 +229,7 @@ describe("probe", () => {
 
   it("reports an API transport failure as network state instead of authentication failure", async () => {
     const root = await scratchDir();
-    const { ctx } = makeCtx(root, () => {
+    const { ctx, requests } = makeCtx(root, () => {
       throw new Error("fetch failed");
     });
     const result = await bahamaCloudProvider.probe(ctx, { intent: [APP_INTENT], locked: [] });
@@ -238,6 +238,8 @@ describe("probe", () => {
       code: "network",
       message: expect.stringContaining("could not be reached"),
     });
+    expect(result.failure?.message).toContain("Check network access");
+    expect(requests[0]?.timeoutMs).toBe(12_000);
   });
 });
 
