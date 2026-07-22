@@ -129,10 +129,6 @@ function updateWeather(dt) {
   weather.transition = clamp(weather.transition + dt / 2.4, 0, 1);
   if (weather.timer >= weather.duration) advanceWeather();
 }
-function weatherBlend() {
-  return { from: weather.prev, to: weather.current, t: weather.transition };
-}
-
 /* ============================== sky / day cycle ============================== */
 const DAY_KEYFRAMES = [
   { t: 0.00, top: [58, 130, 168], bot: [173, 219, 214], sun: [255, 244, 214], glow: 0.25 },
@@ -646,7 +642,7 @@ function endRun() {
 }
 
 /* ============================== rendering ============================== */
-function drawScene(t, dt) {
+function drawScene(t) {
   const dayT = (survivedTime % DAY_DURATION) / DAY_DURATION;
   const sky = skyAt(dayT);
   const stormMix = weather.current === "storm" ? weather.transition : (weather.prev === "storm" ? 1 - weather.transition : 0);
@@ -1020,7 +1016,7 @@ function frame(now) {
     updateParticles(dt);
   }
 
-  if (state !== "paused" && state !== "gameover") drawScene(t, dt);
+  if (state !== "paused" && state !== "gameover") drawScene(t);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
