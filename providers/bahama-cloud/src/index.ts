@@ -17,6 +17,7 @@ import {
   type ProbeRequest,
   type ProbeResult,
   type ProviderContext,
+  type ProviderFailureCode,
   type ResourceStatus,
   type SecretRef,
   type StatusReport,
@@ -27,7 +28,8 @@ import {
  * Bahama Cloud driver: talks to the hosted control plane over REST with an
  * OAuth bearer token. Never MCP. The control plane owns deployment
  * orchestration; this driver only creates/adopts projects by slug, provisions
- * the optional D1 database, and runs the upload → deploy → poll pipeline.
+ * the optional D1 database, and runs the resumable upload → deploy → poll
+ * pipeline.
  */
 
 const PROVIDER_ID = "bahama-cloud";
@@ -36,7 +38,9 @@ const LOGIN_HINT = `bahama auth login ${PROVIDER_ID}`;
 // Mirrors DEFAULT_MAX_UPLOAD_BYTES in the control plane's deployment contract.
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const POLL_INTERVAL_MS = 3_000;
-const POLL_TIMEOUT_MS = 5 * 60_000;
+// The control plane's default build-stage timeout is 15 minutes. Keep one
+// polling window beyond that default; a timeout remains safely resumable.
+const POLL_TIMEOUT_MS = 20 * 60_000;
 const SUPPORTED_FRAMEWORKS = ["static-site", "static-bundle", "vite-spa", "vite-hono", "hono-api"];
 const TERMINAL_JOB_STATUSES = new Set(["deployed", "failed"]);
 
@@ -144,6 +148,43 @@ function readTokenFile(): string | null {
   }
 }
 
+class CloudRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: "network" | "timeout" | "cancelled",
+  ) {
+    super(message);
+    this.name = "CloudRequestError";
+  }
+}
+
+async function cloudRequest<T>(
+  ctx: ProviderContext,
+  operation: string,
+  request: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await request();
+  } catch (error) {
+    if (error instanceof CloudRequestError) throw error;
+    if (ctx.signal.aborted) {
+      throw new CloudRequestError(`Bahama Cloud ${operation} was cancelled.`, "cancelled");
+    }
+    if (error instanceof Error && /\b(time(?:d)?\s*out|timeout)\b/i.test(error.message)) {
+      throw new CloudRequestError(`Bahama Cloud ${operation} timed out.`, "timeout");
+    }
+    throw new CloudRequestError(
+      `Bahama Cloud ${operation} failed because the service could not be reached.`,
+      "network",
+    );
+  }
+}
+
+function cloudRequestRecovery(error: CloudRequestError): string {
+  if (error.code === "cancelled") return "Re-run the same Bahama command when you are ready to continue.";
+  return "Check network access to Bahama Cloud, then re-run the same command.";
+}
+
 /**
  * A token that is valid RIGHT NOW, sealed before any request or log can see
  * it. Resolution order: BAHAMA_TOKEN (CI), then the CLI-injected credential
@@ -155,7 +196,12 @@ async function freshToken(ctx: ProviderContext, forceRefresh = false): Promise<S
   if (fromEnv && fromEnv.trim() !== "") {
     return ctx.secrets.seal("bahama-cloud.accessToken", fromEnv.trim());
   }
-  if (ctx.credentials) return ctx.credentials.freshToken({ forceRefresh });
+  const credentials = ctx.credentials;
+  if (credentials) {
+    return cloudRequest(ctx, "credential refresh", () =>
+      credentials.freshToken({ forceRefresh }),
+    );
+  }
   const raw = readTokenFile();
   return raw ? ctx.secrets.seal("bahama-cloud.accessToken", raw) : null;
 }
@@ -182,13 +228,15 @@ async function api(
   body?: JsonObject,
 ): Promise<HttpResponse> {
   const send = async (token: SecretRef): Promise<HttpResponse> =>
-    ctx.secrets.use(token, async (raw) =>
-      ctx.http.request({
-        method,
-        url: `${baseUrl()}${path}`,
-        headers: { authorization: `Bearer ${raw}` },
-        ...(body !== undefined ? { body } : {}),
-      }),
+    cloudRequest(ctx, "API request", () =>
+      ctx.secrets.use(token, async (raw) =>
+        ctx.http.request({
+          method,
+          url: `${baseUrl()}${path}`,
+          headers: { authorization: `Bearer ${raw}` },
+          ...(body !== undefined ? { body } : {}),
+        }),
+      ),
     );
 
   const token = await freshToken(ctx);
@@ -216,18 +264,35 @@ function apiError(what: string, res: HttpResponse): string {
   return `${what} failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`;
 }
 
-function fail(message: string, recovery?: string): StepOutcome {
+function fail(message: string, recovery?: string, code?: ProviderFailureCode): StepOutcome {
   return {
     status: "failed",
     postconditionVerified: false,
-    error: { message, ...(recovery !== undefined ? { recovery } : {}) },
+    error: {
+      message,
+      ...(recovery !== undefined ? { recovery } : {}),
+      ...(code !== undefined ? { code } : {}),
+    },
   };
+}
+
+function httpFailureCode(status: number): ProviderFailureCode {
+  if (status === 401) return "authentication";
+  if (status === 403) return "permission";
+  if (status === 404) return "not-found";
+  if (status === 408 || status === 504) return "timeout";
+  return "provider-api";
+}
+
+function apiFail(what: string, response: HttpResponse, recovery?: string): StepOutcome {
+  return fail(apiError(what, response), recovery, httpFailureCode(response.status));
 }
 
 function authFail(): StepOutcome {
   return fail(
     "Bahama Cloud rejected the access token (HTTP 401).",
     `Set BAHAMA_TOKEN or run \`${LOGIN_HINT}\`.`,
+    "authentication",
   );
 }
 
@@ -429,9 +494,9 @@ async function ensureProject(
       ...(framework ? { app: { framework } } : {}),
       ...(withDatabase ? { resources: { d1: { enabled: true } } } : {}),
     });
-    if (created.status !== 201) return fail(apiError(`Creating project ${slug}`, created));
+    if (created.status !== 201) return apiFail(`Creating project ${slug}`, created);
   } else if (!existed) {
-    return fail(apiError(`Looking up project ${slug}`, existing));
+    return apiFail(`Looking up project ${slug}`, existing);
   } else if (framework) {
     // Adoption keeps manifest intent authoritative: align the framework so
     // later deploys build the target the manifest declares.
@@ -440,7 +505,7 @@ async function ensureProject(
       const patched = await api(ctx, "PATCH", `/api/projects/${slug}`, {
         app: { framework },
       });
-      if (patched.status !== 200) return fail(apiError(`Updating framework for ${slug}`, patched));
+      if (patched.status !== 200) return apiFail(`Updating framework for ${slug}`, patched);
     }
   }
 
@@ -467,9 +532,9 @@ async function ensureDatabase(
       slug,
       resources: { d1: { enabled: true } },
     });
-    if (created.status !== 201) return fail(apiError(`Creating project ${slug}`, created));
+    if (created.status !== 201) return apiFail(`Creating project ${slug}`, created);
   } else if (existing.status !== 200) {
-    return fail(apiError(`Looking up project ${slug}`, existing));
+    return apiFail(`Looking up project ${slug}`, existing);
   } else {
     const project = parseJson<ProjectEnvelope>(existing)?.project;
     if (project && !project.resources.d1.enabled) {
@@ -477,7 +542,7 @@ async function ensureDatabase(
         resources: { d1: { enabled: true } },
       });
       if (patched.status !== 200) {
-        return fail(apiError(`Enabling the database for ${slug}`, patched));
+        return apiFail(`Enabling the database for ${slug}`, patched);
       }
     }
   }
@@ -487,7 +552,7 @@ async function ensureDatabase(
   if (!(beforeDb?.exists && beforeDb.id)) {
     const provisioned = await api(ctx, "POST", `/api/projects/${slug}/database/provision`);
     if (provisioned.status !== 200) {
-      return fail(apiError(`Provisioning the database for ${slug}`, provisioned));
+      return apiFail(`Provisioning the database for ${slug}`, provisioned);
     }
   }
 
@@ -506,7 +571,7 @@ async function ensureDatabase(
   };
 }
 
-async function deployApplication(
+async function startDeployment(
   ctx: ProviderContext,
   slug: string,
   step: PlannedStep,
@@ -519,24 +584,25 @@ async function deployApplication(
   try {
     ({ archive, fileCount } = packageSource(ctx.projectRoot, framework, sourceDir));
   } catch (error) {
-    return fail(`Packaging the project source failed: ${(error as Error).message}`);
+    return fail(`Packaging the project source failed: ${(error as Error).message}`, undefined, "unknown");
   }
   if (fileCount === 0) {
-    return fail(`No deployable files found in ${ctx.projectRoot} after exclusions.`);
+    return fail(`No deployable files found in ${ctx.projectRoot} after exclusions.`, undefined, "not-found");
   }
   if (archive.byteLength > MAX_UPLOAD_BYTES) {
     return fail(
       `Source archive is ${archive.byteLength} bytes, over the ${MAX_UPLOAD_BYTES}-byte upload limit.`,
       "Remove large assets that are not part of the app, then re-run bahama apply.",
+      "provider-api",
     );
   }
 
   const target = await api(ctx, "POST", `/api/projects/${slug}/deploy/upload-url`);
   if (target.status === 401) return authFail();
-  if (target.status !== 200) return fail(apiError("Requesting a source upload URL", target));
+  if (target.status !== 200) return apiFail("Requesting a source upload URL", target);
   const upload = parseJson<UploadTargetEnvelope>(target);
   if (!upload?.uploadId || !upload.uploadUrl) {
-    return fail("Upload URL response was missing uploadId or uploadUrl.");
+    return fail("Upload URL response was missing uploadId or uploadUrl.", undefined, "incompatible-output");
   }
 
   // ctx.http is JSON-only; this one signed-URL PUT carries raw zip bytes, so
@@ -551,73 +617,118 @@ async function deployApplication(
     });
     putStatus = put.status;
   } catch (error) {
-    return fail(`Uploading the source archive failed: ${(error as Error).message}`);
+    return fail(
+      `Uploading the source archive failed: ${(error as Error).message}`,
+      undefined,
+      ctx.signal.aborted ? "cancelled" : "network",
+    );
   }
   if (putStatus < 200 || putStatus >= 300) {
-    return fail(`Uploading the source archive failed (HTTP ${putStatus}).`);
+    return fail(`Uploading the source archive failed (HTTP ${putStatus}).`, undefined, httpFailureCode(putStatus));
   }
 
   const started = await api(ctx, "POST", `/api/projects/${slug}/deploy/start`, {
     uploadId: upload.uploadId,
   });
-  if (started.status !== 200) return fail(apiError("Starting the deploy", started));
-  let job = parseJson<DeployJob>(started);
+  if (started.status !== 200) return apiFail("Starting the deploy", started);
+  const job = parseJson<DeployJob>(started);
   const jobId = job?.jobId;
-  if (!job || !jobId) return fail("Deploy start response was missing jobId.");
-
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
-  while (!TERMINAL_JOB_STATUSES.has(job.status ?? "")) {
-    if (ctx.signal.aborted) {
-      return fail(
-        `Deploy ${jobId} was cancelled while ${job.status ?? "running"}.`,
-        "Re-run bahama apply to poll the job again.",
-      );
-    }
-    if (Date.now() >= deadline) {
-      return fail(
-        `Deploy ${jobId} did not reach a terminal status within ${POLL_TIMEOUT_MS / 1000}s (last: ${job.status ?? "unknown"}).`,
-        "Re-run bahama apply to poll the job again; the deployer may still finish.",
-      );
-    }
-    await sleep(POLL_INTERVAL_MS, ctx.signal);
-    const polled = await api(ctx, "GET", `/api/projects/${slug}/deploy/status/${jobId}`);
-    if (polled.status === 200) {
-      job = parseJson<DeployJob>(polled) ?? job;
-    } else if (polled.status >= 400 && polled.status < 500) {
-      return fail(apiError(`Polling deploy ${jobId}`, polled));
-    }
-    // 5xx while polling is transient; keep going until the deadline.
+  if (!job || !jobId) {
+    return fail("Deploy start response was missing jobId.", undefined, "incompatible-output");
   }
 
-  if (job.status !== "deployed") {
-    const code = job.errorCode ? ` (${job.errorCode})` : "";
-    const detail = job.errorMessage ? `: ${job.errorMessage}` : "";
-    return fail(
-      `Deploy ${jobId} failed${code}${detail}`,
-      "Fix the reported source issue and re-run bahama apply.",
-    );
-  }
-  const url = job.url;
-  if (!url) return fail(`Deploy ${jobId} reported deployed but returned no production URL.`);
-
-  const live = await ctx.http.request({ method: "GET", url });
-  const verified = live.status < 500;
+  // The accepted job id is the recovery identity. This step returns as soon
+  // as it has that id so core journals it before readiness polling begins.
   return {
-    status: verified ? "succeeded" : "failed",
-    postconditionVerified: verified,
-    produced: { productionUrl: url },
+    status: "succeeded",
+    postconditionVerified: true,
+    produced: { deploymentId: jobId },
     receipt: {
       slug,
       jobId,
       uploadId: upload.uploadId,
-      status: job.status,
+      status: job.status ?? null,
       files: fileCount,
       archiveBytes: archive.byteLength,
     },
-    ...(verified
-      ? {}
-      : { error: { message: `Production URL responded HTTP ${live.status} after deploy ${jobId}.` } }),
   };
+}
+
+async function awaitDeployment(
+  ctx: ProviderContext,
+  slug: string,
+  step: PlannedStep,
+  inputs: ExecutionInputs,
+): Promise<StepOutcome> {
+  const jobId = Object.values(inputs.consumed).find(
+    (value): value is string => typeof value === "string" && value !== "",
+  );
+  if (!jobId) {
+    return fail(`Step ${step.id} received no accepted Bahama Cloud deployment id.`, undefined, "incompatible-output");
+  }
+
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let lastStatus = "unknown";
+  for (;;) {
+    if (ctx.signal.aborted) {
+      return fail(
+        `Deploy ${jobId} was cancelled while ${lastStatus}.`,
+        "Re-run this apply to continue watching the accepted deployment; Bahama will not create another one.",
+        "cancelled",
+      );
+    }
+    const polled = await api(
+      ctx,
+      "GET",
+      `/api/projects/${slug}/deploy/status/${encodeURIComponent(jobId)}`,
+    );
+    if (polled.status === 200) {
+      const job = parseJson<DeployJob>(polled);
+      if (!job?.jobId || job.jobId !== jobId || typeof job.status !== "string") {
+        return fail(
+          `Deploy status response for ${jobId} was missing or mismatched its job identity or status.`,
+          undefined,
+          "incompatible-output",
+        );
+      }
+      lastStatus = job.status;
+      if (TERMINAL_JOB_STATUSES.has(job.status)) {
+        if (job.status !== "deployed") {
+          const code = job.errorCode ? ` (${job.errorCode})` : "";
+          const detail = job.errorMessage ? `: ${job.errorMessage}` : "";
+          return fail(
+            `Deploy ${jobId} failed${code}${detail}`,
+            "Fix the reported source issue and re-run bahama apply.",
+            "provider-api",
+          );
+        }
+        if (!job.url) {
+          return fail(
+            `Deploy ${jobId} reported deployed but returned no production URL.`,
+            undefined,
+            "incompatible-output",
+          );
+        }
+        return {
+          status: "succeeded",
+          postconditionVerified: true,
+          produced: { productionUrl: job.url },
+          receipt: { slug, jobId, status: job.status, productionUrl: job.url },
+        };
+      }
+    } else if (polled.status >= 400 && polled.status < 500) {
+      return apiFail(`Polling deploy ${jobId}`, polled);
+    }
+    // 5xx while polling is transient; keep going until the deadline.
+    if (Date.now() >= deadline) {
+      return fail(
+        `Deploy ${jobId} did not reach a terminal status within ${POLL_TIMEOUT_MS / 1000}s (last: ${lastStatus}).`,
+        "Re-run this apply to continue watching the accepted deployment; Bahama will not create another one.",
+        "timeout",
+      );
+    }
+    await sleep(POLL_INTERVAL_MS, ctx.signal);
+  }
 }
 
 async function verifyApplication(
@@ -632,9 +743,11 @@ async function verifyApplication(
     if (res.status === 200) url = parseJson<ProjectEnvelope>(res)?.project?.deployment.url ?? null;
   }
   if (!url) {
-    return fail(`No production URL is recorded for ${slug}.`, "Deploy the application first.");
+    return fail(`No production URL is recorded for ${slug}.`, "Deploy the application first.", "not-found");
   }
-  const live = await ctx.http.request({ method: "GET", url });
+  const live = await cloudRequest(ctx, "production verification", () =>
+    ctx.http.request({ method: "GET", url }),
+  );
   const verified = live.status < 500;
   return {
     status: verified ? "succeeded" : "failed",
@@ -642,7 +755,7 @@ async function verifyApplication(
     receipt: { slug, httpStatus: live.status },
     ...(verified
       ? {}
-      : { error: { message: `Production URL for ${slug} responded HTTP ${live.status}.` } }),
+      : { error: { code: "provider-api" as const, message: `Production URL for ${slug} responded HTTP ${live.status}.` } }),
   };
 }
 
@@ -664,7 +777,7 @@ async function setProjectSecret(
   return ctx.secrets.use(ref, async (raw) => {
     const response = await api(ctx, "PUT", `/api/projects/${slug}/secrets`, { name, value: raw });
     if (response.status === 401) return authFail();
-    if (response.status !== 200) return fail(apiError(`Setting project secret ${name}`, response));
+    if (response.status !== 200) return apiFail(`Setting project secret ${name}`, response);
     const metadata = parseJson<{ secret?: { name?: string } }>(response)?.secret;
     const verified = metadata?.name === name;
     return {
@@ -682,13 +795,13 @@ async function createDevelopmentAccess(ctx: ProviderContext, slug: string): Prom
     expiresInDays: 30,
   });
   if (response.status === 401) return authFail();
-  if (response.status !== 201) return fail(apiError("Creating local development access", response));
+  if (response.status !== 201) return apiFail("Creating local development access", response);
   const env = parseJson<{ env?: Record<string, unknown>; devToken?: { publicId?: string; expiresAt?: string } }>(response);
   const base = env?.env?.["BAHAMA_API_BASE_URL"];
   const project = env?.env?.["BAHAMA_PROJECT_SLUG"];
   const token = env?.env?.["BAHAMA_DEV_TOKEN"];
   if (typeof base !== "string" || typeof project !== "string" || typeof token !== "string") {
-    return fail("Bahama Cloud returned an incomplete local-development credential set.");
+    return fail("Bahama Cloud returned an incomplete local-development credential set.", undefined, "incompatible-output");
   }
   return {
     status: "succeeded",
@@ -741,55 +854,66 @@ export const bahamaCloudProvider = defineProvider({
   async probe(ctx: ProviderContext, req: ProbeRequest): Promise<ProbeResult> {
     // REST-only driver: there is no external CLI to install.
     const tool = { installed: true } as const;
-    if ((await freshToken(ctx)) === null) {
-      return {
-        tool,
-        auth: { state: "unauthenticated", loginHint: LOGIN_HINT },
-        accounts: [],
-        observed: {},
-      };
-    }
+    try {
+      if ((await freshToken(ctx)) === null) {
+        return {
+          tool,
+          auth: { state: "unauthenticated", loginHint: LOGIN_HINT },
+          accounts: [],
+          observed: {},
+        };
+      }
 
-    const slug = resolveSlug(ctx, req);
-    const fetched = await fetchProjectState(ctx, slug);
-    if (fetched.kind === "unauthorized") {
-      return {
-        tool,
-        auth: { state: "expired", loginHint: LOGIN_HINT },
-        accounts: [],
-        observed: {},
-      };
-    }
-    if (fetched.kind === "error") {
-      return {
-        tool,
-        auth: { state: "authenticated", identity: "bahama-cloud user" },
-        accounts: [],
-        observed: {},
-        warnings: [fetched.message],
-      };
-    }
+      const slug = resolveSlug(ctx, req);
+      const fetched = await fetchProjectState(ctx, slug);
+      if (fetched.kind === "unauthorized") {
+        return {
+          tool,
+          auth: { state: "expired", loginHint: LOGIN_HINT },
+          accounts: [],
+          observed: {},
+        };
+      }
+      if (fetched.kind === "error") {
+        return {
+          tool,
+          auth: { state: "authenticated", identity: "bahama-cloud user" },
+          accounts: [],
+          observed: {},
+          warnings: [fetched.message],
+        };
+      }
 
-    const identity = fetched.identity ?? "bahama-cloud user";
-    // The durable user id is what the lock records; email is just a label.
-    const accountId = fetched.userId ?? "personal";
-    const observed: JsonObject = {};
-    for (const intent of req.intent) {
-      observed[intent.resourceKey] =
-        intent.role === "database"
-          ? observeDatabase(fetched.project)
-          : observeApplication(fetched.project);
+      const identity = fetched.identity ?? "bahama-cloud user";
+      // The durable user id is what the lock records; email is just a label.
+      const accountId = fetched.userId ?? "personal";
+      const observed: JsonObject = {};
+      for (const intent of req.intent) {
+        observed[intent.resourceKey] =
+          intent.role === "database"
+            ? observeDatabase(fetched.project)
+            : observeApplication(fetched.project);
+      }
+      return {
+        tool,
+        auth: {
+          state: "authenticated",
+          identity,
+          account: { id: accountId, label: identity, kind: "personal" },
+        },
+        accounts: [{ id: accountId, label: identity, kind: "personal" }],
+        observed,
+      };
+    } catch (error) {
+      if (!(error instanceof CloudRequestError)) throw error;
+      return {
+        tool,
+        auth: { state: "unknown", code: error.code, reason: error.message },
+        accounts: [],
+        observed: {},
+        failure: { code: error.code, message: error.message },
+      };
     }
-    return {
-      tool,
-      auth: {
-        state: "authenticated",
-        identity,
-        account: { id: accountId, label: identity, kind: "personal" },
-      },
-      accounts: [{ id: accountId, label: identity, kind: "personal" }],
-      observed,
-    };
   },
 
   async plan(ctx: ProviderContext, req: PlanRequest): Promise<PlanContribution> {
@@ -878,10 +1002,12 @@ export const bahamaCloudProvider = defineProvider({
 
     const operation = req.operation ?? { kind: "deploy" as const, environment: appIntent?.environment ?? "production" };
     if (appIntent && ensureId && operation.kind === "deploy" && operation.environment === (appIntent.environment ?? "production")) {
+      const deployStartId = `${appIntent.resourceKey.replaceAll(".", "-")}-deploy-start`;
+      const deployAwaitId = `${appIntent.resourceKey.replaceAll(".", "-")}-deploy-await`;
       steps.push({
-        id: `${appIntent.resourceKey.replaceAll(".", "-")}-deploy`,
-        action: "cloud.app.deploy",
-        summary: `Package the source and deploy \`${slug}\` to Bahama Cloud`,
+        id: deployStartId,
+        action: "cloud.app.deploy.start",
+        summary: `Package and submit \`${slug}\` to Bahama Cloud`,
         resourceKey: appIntent.resourceKey,
         effects: { deploys: true },
         dependsOn: [ensureId, ...(dbIntent ? ["database-ensure"] : []), ...secretStepIds],
@@ -890,8 +1016,20 @@ export const bahamaCloudProvider = defineProvider({
           framework: appIntent.framework ?? null,
           dir: typeof appIntent.config["dir"] === "string" ? appIntent.config["dir"] : null,
         },
+        produces: ["deploymentId"],
+        postcondition: "Bahama Cloud accepts the deploy job and returns its durable id.",
+      });
+      steps.push({
+        id: deployAwaitId,
+        action: "cloud.app.deploy.await",
+        summary: `Wait for Bahama Cloud deployment of \`${slug}\``,
+        resourceKey: appIntent.resourceKey,
+        effects: { readOnly: true },
+        dependsOn: [deployStartId],
+        consumes: [formatCapabilityAddress({ resourceKey: appIntent.resourceKey, capability: "deploymentId" })],
+        inputs: { slug },
         produces: ["productionUrl"],
-        postcondition: "The deploy job reports `deployed` and the production URL responds.",
+        postcondition: "The accepted deploy job reports `deployed` and returns its production URL.",
       });
       steps.push({
         id: `${appIntent.resourceKey.replaceAll(".", "-")}-verify`,
@@ -899,7 +1037,7 @@ export const bahamaCloudProvider = defineProvider({
         summary: `Verify \`${slug}\` responds in production`,
         resourceKey: appIntent.resourceKey,
         effects: { readOnly: true },
-        dependsOn: [`${appIntent.resourceKey.replaceAll(".", "-")}-deploy`],
+        dependsOn: [deployAwaitId],
         consumes: [formatCapabilityAddress({ resourceKey: appIntent.resourceKey, capability: "productionUrl" })],
         inputs: { slug },
         postcondition: "A production request returns a non-5xx response.",
@@ -914,138 +1052,164 @@ export const bahamaCloudProvider = defineProvider({
       return fail(`Step ${step.id} is missing its project slug input.`);
     }
 
-    switch (step.action) {
-      case "cloud.project.ensure":
-        return ensureProject(ctx, slug, step);
-      case "cloud.database.ensure":
-        return ensureDatabase(ctx, slug);
-      case "cloud.secret.set":
-        return setProjectSecret(ctx, slug, step, inputs);
-      case "cloud.dev-access.create":
-        return createDevelopmentAccess(ctx, slug);
-      case "cloud.app.deploy":
-        return deployApplication(ctx, slug, step);
-      case "cloud.app.verify":
-        return verifyApplication(ctx, slug, inputs);
-      default:
-        return fail(`Unknown bahama-cloud action ${step.action}`);
+    try {
+      switch (step.action) {
+        case "cloud.project.ensure":
+          return await ensureProject(ctx, slug, step);
+        case "cloud.database.ensure":
+          return await ensureDatabase(ctx, slug);
+        case "cloud.secret.set":
+          return await setProjectSecret(ctx, slug, step, inputs);
+        case "cloud.dev-access.create":
+          return await createDevelopmentAccess(ctx, slug);
+        case "cloud.app.deploy.start":
+          return await startDeployment(ctx, slug, step);
+        case "cloud.app.deploy.await":
+          return await awaitDeployment(ctx, slug, step, inputs);
+        case "cloud.app.deploy":
+          return fail(
+            "This saved plan uses the pre-resume Bahama Cloud deployment action.",
+            "Run `bahama deploy` again so deployment acceptance and readiness use separate resumable steps.",
+            "incompatible-output",
+          );
+        case "cloud.app.verify":
+          return await verifyApplication(ctx, slug, inputs);
+        default:
+          return fail(`Unknown bahama-cloud action ${step.action}`);
+      }
+    } catch (error) {
+      if (!(error instanceof CloudRequestError)) throw error;
+      return fail(error.message, cloudRequestRecovery(error), error.code);
     }
   },
 
   async status(ctx: ProviderContext, req: ProbeRequest): Promise<StatusReport> {
-    const token = await freshToken(ctx);
-    const fetched = new Map<string, { status: number; project: ProjectInfo | null }>();
-    const resources: ResourceStatus[] = [];
+    try {
+      const token = await freshToken(ctx);
+      const fetched = new Map<string, { status: number; project: ProjectInfo | null }>();
+      const resources: ResourceStatus[] = [];
 
-    for (const intent of req.intent) {
-      const locked = req.locked.find((entry) => entry.resourceKey === intent.resourceKey);
-      const lockedSlug = typeof locked?.identity["slug"] === "string" ? locked.identity["slug"] : null;
-      const slug = lockedSlug ?? resolveSlug(ctx, req);
+      for (const intent of req.intent) {
+        const locked = req.locked.find((entry) => entry.resourceKey === intent.resourceKey);
+        const lockedSlug = typeof locked?.identity["slug"] === "string" ? locked.identity["slug"] : null;
+        const slug = lockedSlug ?? resolveSlug(ctx, req);
 
-      if (!token || !slug) {
-        resources.push({
-          resourceKey: intent.resourceKey,
-          exists: false,
-          health: {
-            state: "unknown",
-            reason: token ? "Bahama Cloud project name could not be resolved." : "Bahama Cloud is not authenticated.",
-          },
-          detail: token ? "project name unresolved" : "not authenticated",
-          drift: [],
-        });
-        continue;
-      }
-
-      if (!fetched.has(slug)) {
-        const res = await api(ctx, "GET", `/api/projects/${slug}`);
-        fetched.set(slug, {
-          status: res.status,
-          project: res.status === 200 ? (parseJson<ProjectEnvelope>(res)?.project ?? null) : null,
-        });
-      }
-      const { status, project } = fetched.get(slug)!;
-
-      if (status === 401) {
-        resources.push({
-          resourceKey: intent.resourceKey,
-          exists: false,
-          health: { state: "unknown", reason: "Bahama Cloud authentication could not be verified." },
-          detail: "not authenticated",
-          drift: [],
-        });
-        continue;
-      }
-      if (!project) {
-        if (status !== 404) {
+        if (!token || !slug) {
           resources.push({
             resourceKey: intent.resourceKey,
             exists: false,
-            health: { state: "unknown", reason: `Bahama Cloud project lookup failed (HTTP ${status}).` },
+            health: {
+              state: "unknown",
+              reason: token ? "Bahama Cloud project name could not be resolved." : "Bahama Cloud is not authenticated.",
+            },
+            detail: token ? "project name unresolved" : "not authenticated",
             drift: [],
           });
           continue;
         }
-        resources.push({
-          resourceKey: intent.resourceKey,
-          exists: false,
-          health: lockedSlug
-            ? { state: "unhealthy", reason: "Locked Bahama Cloud project no longer exists." }
-            : { state: "not_ready", reason: "Bahama Cloud project has not been provisioned." },
-          drift: lockedSlug
-            ? [
-                {
-                  severity: "material",
-                  resourceKey: intent.resourceKey,
-                  message: `Locked project \`${slug}\` no longer exists on Bahama Cloud.`,
-                },
-              ]
-            : [],
-        });
-        continue;
-      }
 
-      if (intent.role === "database") {
-        const d1 = project.resources.d1;
-        const exists = Boolean(d1.enabled && d1.databaseId);
-        resources.push({
-          resourceKey: intent.resourceKey,
-          exists,
-          health: !exists
-            ? locked
-              ? { state: "unhealthy", reason: "Locked database is no longer provisioned." }
-              : { state: "not_ready", reason: "Database has not been provisioned." }
-            : d1.status === "ready"
-              ? { state: "ready" }
-              : d1.status === "failed"
-                ? { state: "unhealthy", reason: "Database provisioning failed." }
-                : { state: "not_ready", reason: `Database is ${d1.status}.` },
-          ...(exists ? { detail: `env.${d1.bindingName ?? "DB"}` } : {}),
-          drift:
-            locked && !exists
+        if (!fetched.has(slug)) {
+          const res = await api(ctx, "GET", `/api/projects/${slug}`);
+          fetched.set(slug, {
+            status: res.status,
+            project: res.status === 200 ? (parseJson<ProjectEnvelope>(res)?.project ?? null) : null,
+          });
+        }
+        const { status, project } = fetched.get(slug)!;
+
+        if (status === 401) {
+          resources.push({
+            resourceKey: intent.resourceKey,
+            exists: false,
+            health: { state: "unknown", reason: "Bahama Cloud authentication could not be verified." },
+            detail: "not authenticated",
+            drift: [],
+          });
+          continue;
+        }
+        if (!project) {
+          if (status !== 404) {
+            resources.push({
+              resourceKey: intent.resourceKey,
+              exists: false,
+              health: { state: "unknown", reason: `Bahama Cloud project lookup failed (HTTP ${status}).` },
+              drift: [],
+            });
+            continue;
+          }
+          resources.push({
+            resourceKey: intent.resourceKey,
+            exists: false,
+            health: lockedSlug
+              ? { state: "unhealthy", reason: "Locked Bahama Cloud project no longer exists." }
+              : { state: "not_ready", reason: "Bahama Cloud project has not been provisioned." },
+            drift: lockedSlug
               ? [
                   {
                     severity: "material",
                     resourceKey: intent.resourceKey,
-                    message: `Locked database for \`${slug}\` is no longer provisioned.`,
+                    message: `Locked project \`${slug}\` no longer exists on Bahama Cloud.`,
                   },
                 ]
               : [],
-        });
-      } else {
-        const url = project.deployment.url;
-        resources.push({
-          resourceKey: intent.resourceKey,
-          exists: true,
-          health: !url
-            ? { state: "not_ready", reason: "Application has not been deployed." }
-            : project.status === "failed"
-              ? { state: "unhealthy", reason: "Latest deployment failed." }
-              : { state: "ready" },
-          ...(url ? { detail: url } : {}),
-          drift: [],
-        });
+          });
+          continue;
+        }
+
+        if (intent.role === "database") {
+          const d1 = project.resources.d1;
+          const exists = Boolean(d1.enabled && d1.databaseId);
+          resources.push({
+            resourceKey: intent.resourceKey,
+            exists,
+            health: !exists
+              ? locked
+                ? { state: "unhealthy", reason: "Locked database is no longer provisioned." }
+                : { state: "not_ready", reason: "Database has not been provisioned." }
+              : d1.status === "ready"
+                ? { state: "ready" }
+                : d1.status === "failed"
+                  ? { state: "unhealthy", reason: "Database provisioning failed." }
+                  : { state: "not_ready", reason: `Database is ${d1.status}.` },
+            ...(exists ? { detail: `env.${d1.bindingName ?? "DB"}` } : {}),
+            drift:
+              locked && !exists
+                ? [
+                    {
+                      severity: "material",
+                      resourceKey: intent.resourceKey,
+                      message: `Locked database for \`${slug}\` is no longer provisioned.`,
+                    },
+                  ]
+                : [],
+          });
+        } else {
+          const url = project.deployment.url;
+          resources.push({
+            resourceKey: intent.resourceKey,
+            exists: true,
+            health: !url
+              ? { state: "not_ready", reason: "Application has not been deployed." }
+              : project.status === "failed"
+                ? { state: "unhealthy", reason: "Latest deployment failed." }
+                : { state: "ready" },
+            ...(url ? { detail: url } : {}),
+            drift: [],
+          });
+        }
       }
+      return { resources };
+    } catch (error) {
+      if (!(error instanceof CloudRequestError)) throw error;
+      return {
+        resources: req.intent.map((intent) => ({
+          resourceKey: intent.resourceKey,
+          exists: false,
+          health: { state: "unknown", code: error.code, reason: error.message },
+          detail: "Bahama Cloud status unavailable",
+          drift: [],
+        })),
+      };
     }
-    return { resources };
   },
 });

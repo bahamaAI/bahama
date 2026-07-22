@@ -13,6 +13,10 @@ Use Bahama Cloud for the managed Bahama path. Choose another provider when the a
 - Inputs: server-side application variables
 - Requirement: a Bahama account; no additional provider CLI
 
+Deployment acceptance and readiness are separate steps. The accepted job ID is
+journaled before polling so an interrupted apply resumes the same job instead
+of uploading and submitting another deployment.
+
 The [descriptor](./src/index.ts) is the authoritative agent-facing capability definition.
 
 ## Documentation

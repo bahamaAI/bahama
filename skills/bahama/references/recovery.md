@@ -26,7 +26,7 @@ Read the failed step, message, and `data.recovery`. Fix the stated source or pro
 
 If the apply never finished and its approved inputs are still valid, rerun the same apply command. Bahama skips steps it already verified and safely re-derives any secret value needed by a remaining step. If the error tells you to re-plan—or if the manifest, lock, migration, or provider configuration changed—make a fresh plan instead.
 
-For Vercel, deployment acceptance is journaled separately from readiness. If polling or the final live check fails, rerun the same apply: Bahama restores the accepted deployment id and continues watching it instead of publishing a duplicate. `bahama status --json` remains useful for an independent live-state check.
+For Vercel and Bahama Cloud, deployment acceptance is journaled separately from readiness. If polling stops while the source is unchanged, rerun the same apply: Bahama restores the accepted deployment id and continues watching it instead of publishing a duplicate. If a terminal build failure requires a source fix, the changed source causes the resumed plan to submit a new deployment while preserving unrelated verified work. `bahama status --json` remains useful for an independent live-state check.
 
 A completed apply is not cached forever. Applying the same plan later is a fresh execution.
 

@@ -161,6 +161,7 @@ afterEach(() => {
   delete process.env["BAHAMA_CLOUD_URL"];
   delete process.env["BAHAMA_CONFIG_DIR"];
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("probe", () => {
@@ -225,6 +226,19 @@ describe("probe", () => {
     const result = await bahamaCloudProvider.probe(ctx, { intent: [APP_INTENT], locked: [] });
     expect(result.auth.state).toBe("expired");
   });
+
+  it("reports an API transport failure as network state instead of authentication failure", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => {
+      throw new Error("fetch failed");
+    });
+    const result = await bahamaCloudProvider.probe(ctx, { intent: [APP_INTENT], locked: [] });
+    expect(result.auth).toMatchObject({ state: "unknown", code: "network" });
+    expect(result.failure).toMatchObject({
+      code: "network",
+      message: expect.stringContaining("could not be reached"),
+    });
+  });
 });
 
 describe("plan", () => {
@@ -255,7 +269,7 @@ describe("plan", () => {
       bindings: developmentBindings,
       probe: probed({ "environment.production": { exists: false }, database: { exists: false } }),
     }));
-    expect(contribution.steps.some((step) => step.action === "cloud.app.deploy")).toBe(false);
+    expect(contribution.steps.some((step) => step.action.startsWith("cloud.app.deploy"))).toBe(false);
     expect(contribution.steps.find((step) => step.action === "cloud.dev-access.create")?.produces).toEqual([
       "developmentApiBaseUrl",
       "developmentProjectSlug",
@@ -263,7 +277,7 @@ describe("plan", () => {
     ]);
   });
 
-  it("contributes ensure, database, deploy, and verify steps with the expected shapes", async () => {
+  it("contributes ensure, database, resumable deploy, and verify steps with the expected shapes", async () => {
     const root = await scratchDir();
     const { ctx } = makeCtx(root, () => undefined);
     const contribution = await bahamaCloudProvider.plan(ctx, planRequest());
@@ -272,7 +286,8 @@ describe("plan", () => {
     expect(contribution.steps.map((s) => s.id)).toEqual([
       "application-ensure",
       "database-ensure",
-      "application-deploy",
+      "application-deploy-start",
+      "application-deploy-await",
       "application-verify",
     ]);
     expect(byId.get("application-ensure")).toMatchObject({
@@ -285,16 +300,23 @@ describe("plan", () => {
       effects: { createsResource: true },
       dependsOn: ["application-ensure"],
     });
-    expect(byId.get("application-deploy")).toMatchObject({
-      action: "cloud.app.deploy",
+    expect(byId.get("application-deploy-start")).toMatchObject({
+      action: "cloud.app.deploy.start",
       effects: { deploys: true },
       dependsOn: ["application-ensure", "database-ensure"],
+      produces: ["deploymentId"],
+    });
+    expect(byId.get("application-deploy-await")).toMatchObject({
+      action: "cloud.app.deploy.await",
+      effects: { readOnly: true },
+      dependsOn: ["application-deploy-start"],
+      consumes: ["application.deploymentId"],
       produces: ["productionUrl"],
     });
     expect(byId.get("application-verify")).toMatchObject({
       action: "cloud.app.verify",
       effects: { readOnly: true },
-      dependsOn: ["application-deploy"],
+      dependsOn: ["application-deploy-await"],
       consumes: ["application.productionUrl"],
     });
   });
@@ -436,6 +458,52 @@ describe("execute cloud.project.ensure", () => {
     });
     expect(JSON.stringify(outcome)).not.toContain(TOKEN);
   });
+
+  it("preserves actionable guidance when a globally unique project name is unavailable", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, (req) => {
+      if (req.method === "GET") return { status: 404, body: { ok: false } };
+      if (req.method === "POST") {
+        return {
+          status: 409,
+          body: {
+            ok: false,
+            code: "project_name_unavailable",
+            error: "Project name my-app is unavailable. Bahama Cloud project names are globally unique; choose a different project.name.",
+          },
+        };
+      }
+      return undefined;
+    });
+    const outcome = await bahamaCloudProvider.execute(
+      ctx,
+      planned({ action: "cloud.project.ensure" }),
+      { consumed: {} },
+    );
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "provider-api",
+        message: expect.stringContaining("choose a different project.name"),
+      },
+    });
+  });
+
+  it("classifies a thrown request timeout without leaking a generic exception", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => {
+      throw new Error("request timed out");
+    });
+    const outcome = await bahamaCloudProvider.execute(
+      ctx,
+      planned({ action: "cloud.project.ensure" }),
+      { consumed: {} },
+    );
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "timeout", recovery: expect.stringContaining("Check network access") },
+    });
+  });
 });
 
 describe("execute cloud.database.ensure", () => {
@@ -538,8 +606,8 @@ describe("local-first bindings", () => {
   });
 });
 
-describe("execute cloud.app.deploy", () => {
-  it("zips the source with exclusions, uploads, starts, polls to deployed, and verifies the URL", async () => {
+describe("execute resumable Cloud deployment", () => {
+  it("packages, uploads, starts, and returns the durable job id before polling", async () => {
     const root = await scratchDir();
     await writeFile(join(root, "index.html"), "<html></html>");
     await writeFile(join(root, "package.json"), "{}");
@@ -562,8 +630,7 @@ describe("execute cloud.app.deploy", () => {
       return { status: 200 } as Response;
     });
 
-    let polls = 0;
-    const { ctx } = makeCtx(root, (req) => {
+    const { ctx, requests } = makeCtx(root, (req) => {
       if (req.method === "POST" && req.url === `${BASE}/api/projects/my-app/deploy/upload-url`) {
         return {
           status: 200,
@@ -573,29 +640,22 @@ describe("execute cloud.app.deploy", () => {
       if (req.method === "POST" && req.url === `${BASE}/api/projects/my-app/deploy/start`) {
         return { status: 200, body: { ok: true, jobId: "job1", status: "building", stage: "build", url: null, errorCode: null, errorMessage: null } };
       }
-      if (req.method === "GET" && req.url === `${BASE}/api/projects/my-app/deploy/status/job1`) {
-        polls += 1;
-        return { status: 200, body: { ok: true, jobId: "job1", status: "deployed", stage: "complete", url: "https://my-app.proj.test", errorCode: null, errorMessage: null } };
-      }
-      if (req.method === "GET" && req.url === "https://my-app.proj.test") {
-        return { status: 200, body: { ok: true } };
-      }
       return undefined;
     });
 
     const outcome = await bahamaCloudProvider.execute(
       ctx,
-      planned({ action: "cloud.app.deploy", inputs: { slug: "my-app", framework: "vite-hono" } }),
+      planned({ action: "cloud.app.deploy.start", inputs: { slug: "my-app", framework: "vite-hono" } }),
       { consumed: {} },
     );
 
     expect(outcome).toMatchObject({
       status: "succeeded",
       postconditionVerified: true,
-      produced: { productionUrl: "https://my-app.proj.test" },
-      receipt: { jobId: "job1", uploadId: "u1", status: "deployed", files: 3 },
+      produced: { deploymentId: "job1" },
+      receipt: { jobId: "job1", uploadId: "u1", status: "building", files: 3 },
     });
-    expect(polls).toBe(1);
+    expect(requests.some((req) => req.url.includes("/deploy/status/"))).toBe(false);
     expect(putUrl).toBe("https://r2.test/signed-put");
 
     // bahama.yaml, bahama.lock, .npmrc, .env, node_modules never ship — for
@@ -606,6 +666,42 @@ describe("execute cloud.app.deploy", () => {
     const serialized = JSON.stringify(outcome);
     expect(serialized).not.toContain(TOKEN);
     expect(serialized).not.toContain("r2.test"); // signed upload URL stays out of receipts
+  });
+
+  it("polls an already accepted job id and returns its production URL", async () => {
+    const root = await scratchDir();
+    const { ctx, requests } = makeCtx(root, (req) =>
+      req.method === "GET" && req.url === `${BASE}/api/projects/my-app/deploy/status/job1`
+        ? {
+            status: 200,
+            body: {
+              ok: true,
+              jobId: "job1",
+              status: "deployed",
+              stage: "complete",
+              url: "https://my-app.proj.test",
+              errorCode: null,
+              errorMessage: null,
+            },
+          }
+        : undefined,
+    );
+
+    const outcome = await bahamaCloudProvider.execute(
+      ctx,
+      planned({ id: "application-deploy-await", action: "cloud.app.deploy.await" }),
+      { consumed: { "application.deploymentId": "job1" } },
+    );
+
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      postconditionVerified: true,
+      produced: { productionUrl: "https://my-app.proj.test" },
+      receipt: { jobId: "job1", status: "deployed", productionUrl: "https://my-app.proj.test" },
+    });
+    expect(requests.map((req) => req.url)).toEqual([
+      `${BASE}/api/projects/my-app/deploy/status/job1`,
+    ]);
   });
 
   it("keeps dist/ for static-bundle deploys", async () => {
@@ -631,7 +727,7 @@ describe("execute cloud.app.deploy", () => {
 
     const outcome = await bahamaCloudProvider.execute(
       ctx,
-      planned({ action: "cloud.app.deploy", inputs: { slug: "my-app", framework: "static-bundle" } }),
+      planned({ action: "cloud.app.deploy.start", inputs: { slug: "my-app", framework: "static-bundle" } }),
       { consumed: {} },
     );
     expect(outcome.status).toBe("succeeded");
@@ -664,7 +760,7 @@ describe("execute cloud.app.deploy", () => {
 
     const outcome = await bahamaCloudProvider.execute(
       ctx,
-      planned({ action: "cloud.app.deploy", inputs: { slug: "my-app", framework: "static-site", dir: "site" } }),
+      planned({ action: "cloud.app.deploy.start", inputs: { slug: "my-app", framework: "static-site", dir: "site" } }),
       { consumed: {} },
     );
     expect(outcome.status).toBe("succeeded");
@@ -676,7 +772,7 @@ describe("execute cloud.app.deploy", () => {
     const { ctx } = makeCtx(root, () => undefined);
     const outcome = await bahamaCloudProvider.execute(
       ctx,
-      planned({ action: "cloud.app.deploy", inputs: { slug: "my-app", framework: "static-site", dir: "../elsewhere" } }),
+      planned({ action: "cloud.app.deploy.start", inputs: { slug: "my-app", framework: "static-site", dir: "../elsewhere" } }),
       { consumed: {} },
     );
     expect(outcome.status).toBe("failed");
@@ -685,25 +781,84 @@ describe("execute cloud.app.deploy", () => {
 
   it("fails with the job error when the deploy job terminates as failed", async () => {
     const root = await scratchDir();
-    await writeFile(join(root, "index.html"), "<html></html>");
-    vi.stubGlobal("fetch", async () => ({ status: 200 }) as Response);
     const { ctx } = makeCtx(root, (req) => {
-      if (req.url === `${BASE}/api/projects/my-app/deploy/upload-url`) {
-        return { status: 200, body: { ok: true, uploadId: "u3", uploadUrl: "https://r2.test/p", contentType: "application/zip" } };
-      }
-      if (req.url === `${BASE}/api/projects/my-app/deploy/start`) {
+      if (req.url === `${BASE}/api/projects/my-app/deploy/status/job3`) {
         return { status: 200, body: { ok: true, jobId: "job3", status: "failed", url: null, errorCode: "build_failed", errorMessage: "vite build exited 1" } };
       }
       return undefined;
     });
     const outcome = await bahamaCloudProvider.execute(
       ctx,
-      planned({ action: "cloud.app.deploy", inputs: { slug: "my-app", framework: "vite-spa" } }),
-      { consumed: {} },
+      planned({ action: "cloud.app.deploy.await", inputs: { slug: "my-app" } }),
+      { consumed: { "application.deploymentId": "job3" } },
     );
     expect(outcome.status).toBe("failed");
     expect(outcome.postconditionVerified).toBe(false);
+    expect(outcome.error?.code).toBe("provider-api");
     expect(outcome.error?.message).toContain("build_failed");
+  });
+
+  it("classifies cancellation while awaiting an accepted job without resubmitting it", async () => {
+    const root = await scratchDir();
+    const { ctx, requests } = makeCtx(root, () => undefined);
+    const controller = new AbortController();
+    controller.abort();
+    ctx.signal = controller.signal;
+
+    const outcome = await bahamaCloudProvider.execute(
+      ctx,
+      planned({ action: "cloud.app.deploy.await" }),
+      { consumed: { "application.deploymentId": "job-cancelled" } },
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "cancelled",
+        recovery: expect.stringContaining("will not create another one"),
+      },
+    });
+    expect(requests).toEqual([]);
+  });
+
+  it("classifies a bounded polling timeout as resumable", async () => {
+    vi.useFakeTimers();
+    const root = await scratchDir();
+    const { ctx, requests } = makeCtx(root, () => ({
+      status: 503,
+      body: { ok: false, error: "temporarily unavailable" },
+    }));
+
+    const pending = bahamaCloudProvider.execute(
+      ctx,
+      planned({ action: "cloud.app.deploy.await" }),
+      { consumed: { "application.deploymentId": "job-timeout" } },
+    );
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    const outcome = await pending;
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "timeout",
+        recovery: expect.stringContaining("will not create another one"),
+      },
+    });
+    expect(requests.every((request) => request.url.endsWith("/deploy/status/job-timeout"))).toBe(true);
+  });
+
+  it("rejects saved pre-resume deploy actions and requires a fresh plan", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => undefined);
+    const outcome = await bahamaCloudProvider.execute(
+      ctx,
+      planned({ action: "cloud.app.deploy" }),
+      { consumed: {} },
+    );
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "incompatible-output", recovery: expect.stringContaining("bahama deploy") },
+    });
   });
 });
 
@@ -761,6 +916,23 @@ describe("status", () => {
     expect(report.resources[0]).toMatchObject({
       exists: false,
       health: { state: "unknown", reason: expect.stringContaining("HTTP 523") },
+      drift: [],
+    });
+  });
+
+  it("reports a structured network health failure when status cannot reach the API", async () => {
+    const root = await scratchDir();
+    const { ctx } = makeCtx(root, () => {
+      throw new Error("fetch failed");
+    });
+    const report = await bahamaCloudProvider.status(ctx, {
+      intent: [APP_INTENT],
+      locked: [{ resourceKey: "application", identity: { slug: "my-app" } }],
+    });
+    expect(report.resources[0]).toMatchObject({
+      resourceKey: "application",
+      exists: false,
+      health: { state: "unknown", code: "network" },
       drift: [],
     });
   });

@@ -51,4 +51,4 @@ Bahama excludes its manifest, lock, local operation state, env files, package-ma
 
 For `static-site`, every packaged file is public. The same is true for a `static-bundle` whose asset root is the archive root. Keep unrelated files outside the application directory.
 
-Deployment errors identify whether archive validation, framework or package-manager support, dependency installation, build, publication, or the live smoke test failed. Fix the reported contract error. If polling ends without a clear terminal result, run `bahama status --json` before reporting failure.
+Deployment errors identify whether archive validation, framework or package-manager support, dependency installation, build, publication, or the live smoke test failed. Bahama records the accepted job before polling. If polling times out or is interrupted, keep the source unchanged and rerun the returned `bahama apply <plan-id>` command; it continues watching that job without uploading again. If the job reports a terminal source failure, fix the source first—the changed source makes the resumed plan submit a new job. Run `bahama status --json` whenever live state remains unclear.

@@ -137,6 +137,38 @@ export async function applyPlan(
 
     const verified = verifiedSteps(priorEntries, planId);
 
+    // An unchanged source tree resumes an accepted asynchronous deployment by
+    // its journaled id. If the user changed source after a failed build/live
+    // check, that accepted operation no longer represents what should ship:
+    // restart its deploy step and every verified dependent while preserving
+    // unrelated resource work. Source drift still does not stale the plan.
+    if (isResume) {
+      const verifiedDeploys = plan.steps.filter(
+        (step) => step.effects.deploys && verified.has(step.id),
+      );
+      if (verifiedDeploys.length > 0) {
+        const currentSourceFingerprint = (await inspectProject(deps.projectRoot)).sourceFingerprint;
+        const invalidated = new Set<string>();
+        for (const step of verifiedDeploys) {
+          const shipped = verified.get(step.id)?.receipt?.["shippedSourceFingerprint"];
+          if (typeof shipped === "string" && shipped !== currentSourceFingerprint) {
+            invalidated.add(step.id);
+          }
+        }
+        let changed = invalidated.size > 0;
+        while (changed) {
+          changed = false;
+          for (const step of plan.steps) {
+            if (!invalidated.has(step.id) && step.dependsOn.some((dependency) => invalidated.has(dependency))) {
+              invalidated.add(step.id);
+              changed = true;
+            }
+          }
+        }
+        for (const stepId of invalidated) verified.delete(stepId);
+      }
+    }
+
     /** Capability values available to consumers, keyed by full address. */
     const produced = new Map<string, JsonValue | SecretRef>();
     // Non-secret values from verified receipts are recoverable immediately.

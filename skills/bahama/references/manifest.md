@@ -19,7 +19,7 @@ environments:
     provider: bahama-cloud
 ```
 
-- `project.name` is the portable stack name and default provider-facing name. Use lowercase letters, numbers, and hyphens.
+- `project.name` is the portable stack name and default provider-facing name. Use lowercase letters, numbers, and hyphens. Bahama Cloud uses it as a globally unique public name, so choose a less generic name if the first one is unavailable.
 - `application.framework` must be supported by every hosted environment.
 - `application.dir` points to the application when it lives below the repository root.
 - `environments` are places where the application runs or receives configuration. `local` writes a protected env file; hosted environments can deploy.

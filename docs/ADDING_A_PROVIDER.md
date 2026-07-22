@@ -159,6 +159,12 @@ Locked IDs are authoritative. Names and slugs are selectors or labels, not
 identity. When several accounts are valid, return a `Decision` with a safe
 manifest `writeBack` path instead of choosing the CLI's ambient default.
 
+If a provider accepts an asynchronous mutation before final readiness, split
+it into acceptance and readiness steps. The acceptance step produces a durable,
+non-secret operation ID; the read-only readiness step consumes it. Core journals
+that ID immediately, resumes the same operation while source is unchanged, and
+starts a new deployment only when the source being shipped has changed.
+
 The manifest rejects ID-shaped config such as `projectId`, `accountId`, and
 `orgId`. Use a human-readable selector such as `scope` or `org`; resolve the
 durable ID into the plan and lock.

@@ -35,6 +35,7 @@ export interface InspectReport extends JsonObject {
 
 /** Directories that never count as project source. */
 const IGNORED_DIRS = new Set(["node_modules", ".git", ".bahama", "dist", "build", ".next", ".vercel", "coverage"]);
+const IGNORED_SOURCE_FILES = new Set([MANIFEST_FILENAME, LOCK_FILENAME]);
 
 const LOCKFILES: Array<[string, string]> = [
   ["package-lock.json", "npm"],
@@ -149,6 +150,7 @@ async function collectSourceFiles(projectRoot: string): Promise<string[]> {
     }
     for (const entry of entries) {
       if (entry.name.startsWith(".") && entry.name !== ".env.example") continue;
+      if (IGNORED_SOURCE_FILES.has(entry.name) && dir === projectRoot) continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!IGNORED_DIRS.has(entry.name)) await walk(full);

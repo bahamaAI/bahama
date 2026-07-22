@@ -888,7 +888,7 @@ describe("execute durable Vercel deployment", () => {
     const outcome = await vercelProvider.execute(ctx, planned({ action: "vercel.deploy" }), { consumed: {} });
     expect(outcome).toMatchObject({
       status: "failed",
-      error: { message: expect.stringContaining("pre-resume"), recovery: expect.stringContaining("bahama plan") },
+      error: { message: expect.stringContaining("pre-resume"), recovery: expect.stringContaining("bahama deploy") },
     });
   });
 

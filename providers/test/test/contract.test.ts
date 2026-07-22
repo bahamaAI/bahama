@@ -356,6 +356,28 @@ describe("failure, resume, and re-derivation", () => {
     expect((await testLiveState(root)).resources["application"]!.deployments).toBe(1);
   });
 
+  it("submits a new deployment when source changes after an accepted deployment fails", async () => {
+    const root = await makeProject({
+      withDatabase: false,
+      simulate: { failOnce: ["test.app.deploy.await"] },
+    });
+    const { plan: doc } = expectPlan(await plan(root));
+
+    const first = await apply(root, doc.planId);
+    expect(first).toMatchObject({ kind: "failed", stepId: "application-deploy-await" });
+    expect((await testLiveState(root)).resources["application"]!.deployments).toBe(1);
+
+    await writeFile(join(root, "fixed-source.ts"), "export const fixed = true;\n");
+    const second = await apply(root, doc.planId);
+    expect(second.kind).toBe("succeeded");
+    if (second.kind === "succeeded") {
+      expect(second.steps).toContainEqual(
+        expect.objectContaining({ id: "application-deploy-start", status: "succeeded" }),
+      );
+    }
+    expect((await testLiveState(root)).resources["application"]!.deployments).toBe(2);
+  });
+
   it("resumes after a mid-apply failure without recreating resources, re-deriving secrets in a fresh process", async () => {
     const root = await makeProject({ simulate: { failOnce: ["test.env.set"] } });
     const { plan: doc } = expectPlan(await plan(root));

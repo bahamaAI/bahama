@@ -1183,7 +1183,7 @@ export const vercelProvider = defineProvider({
       case "vercel.deploy":
         return fail(
           "This saved plan uses the pre-resume Vercel deployment action.",
-          "Run `bahama plan` again so deployment acceptance and readiness use separate resumable steps.",
+          "Run `bahama deploy` again so deployment acceptance and readiness use separate resumable steps.",
         );
       case "vercel.verify":
         return verify(ctx, step, inputs);
