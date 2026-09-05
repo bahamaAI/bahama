@@ -10,7 +10,6 @@ Your agent can write the code, but then what? Bahama gives agents a safe, reliab
 
 Works across Claude Code, Codex, Cursor, and all major coding agents — and with provider accounts you already have (Vercel, Neon, etc.) or directly on the managed [Bahama Cloud](https://www.bahama.ai).
 
-
 [Website](https://www.bahama.ai) | [Install](https://bahama.ai/install.md) | [Documentation](https://www.bahama.ai/docs)
 
 <img src=".github/assets/plan-apply.svg" width="720" alt="Demo: you ask your agent for Postgres, the agent plans it with Bahama, you approve, and Bahama builds and verifies it" />
@@ -139,10 +138,6 @@ Note: [`bahama-runtime`](https://www.npmjs.com/package/bahama-runtime) is an add
 | [`packages/runtime`](packages/runtime)           | Server-side runtime bridge for Bahama Cloud application resources      |
 | [`providers/`](providers)                        | Official provider implementations                                      |
 | [`skills/bahama`](skills/bahama)                 | The operating guide installed into a user's coding agent               |
-
-## OpenAI Build Week
-
-Bahama started during OpenAI's Build Week Hackathon, Codex helped me translate my visions for an open source, agent-first cloud orchestrator into this published alpha. Building this complex monorepo required orchestrating the CLI, core engine, providers definitions, tests, and agent skill. Codex with GPT 5.6 helped me condense a months-long build into a one-week launch.
 
 ## Contributing
 
